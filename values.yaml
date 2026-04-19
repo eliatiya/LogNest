@@ -1,0 +1,146 @@
+# ============================================================
+# LogNest - values.yaml
+# ============================================================
+
+# -- Global image registry for air-gap environments.
+# Set to your private registry, e.g. "registry.internal:5000"
+global:
+  imageRegistry: ""
+  imagePullSecrets: []
+  # imagePullSecrets:
+  #   - name: regcred
+
+# ============================================================
+# Namespace
+# ============================================================
+namespace:
+  create: true
+  name: lognest
+
+# ============================================================
+# Log Collector CronJob
+# ============================================================
+collector:
+  # Cron schedule for first daily run (default 02:00 UTC)
+  schedule1: "0 2 * * *"
+  # Cron schedule for second daily run (default 14:00 UTC)
+  schedule2: "0 14 * * *"
+
+  # Collect logs from all namespaces (true) or specific ones
+  allNamespaces: true
+  # Used only when allNamespaces: false
+  namespaces: []
+  #   - default
+  #   - production
+
+  # How many months of logs/zips to retain before deletion
+  retentionMonths: 1
+
+  image:
+    repository: bitnami/kubectl
+    tag: "1.29.3"
+    pullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "256Mi"
+
+  # Node selector, tolerations, affinity for the collector pods
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ============================================================
+# Storage (NFS)
+# ============================================================
+storage:
+  # NFS server address
+  nfsServer: "192.168.1.100"
+  # NFS exported path
+  nfsPath: "/exports/lognest"
+
+  storageClass:
+    create: true
+    name: lognest-nfs
+    # NFS provisioner image (nfs-subdir-external-provisioner)
+    provisioner: cluster.local/nfs-subdir-external-provisioner
+    reclaimPolicy: Retain
+    volumeBindingMode: Immediate
+    archiveOnDelete: "false"
+
+  pvc:
+    name: lognest-data
+    size: 100Gi
+    accessMode: ReadWriteMany
+
+  # Sub-directory names inside the PVC
+  logsDir: "logs"
+  logsZipDir: "logs_zip"
+
+# ============================================================
+# Web UI Dashboard
+# ============================================================
+ui:
+  replicaCount: 1
+
+  image:
+    repository: python
+    tag: "3.11-slim"
+    pullPolicy: IfNotPresent
+
+  service:
+    type: ClusterIP
+    port: 8080
+
+  resources:
+    requests:
+      cpu: "100m"
+      memory: "128Mi"
+    limits:
+      cpu: "500m"
+      memory: "512Mi"
+
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# ============================================================
+# Ingress
+# ============================================================
+ingress:
+  enabled: true
+  # ingressClassName is auto-detected from RKE2 (nginx)
+  className: "nginx"
+  host: "lognest.example.com"
+  # TLS secret name — leave empty to disable TLS
+  tlsSecret: ""
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "500m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+
+# ============================================================
+# Service Account
+# ============================================================
+serviceAccount:
+  create: true
+  name: lognest
+
+# ============================================================
+# Air-gap: private registry image overrides
+# ============================================================
+# When global.imageRegistry is set, all images are prefixed
+# automatically. You can also override individual images here.
+images:
+  collector:
+    repository: bitnami/kubectl
+    tag: "1.29.3"
+  ui:
+    repository: python
+    tag: "3.11-slim"
+  nfsProvisioner:
+    repository: registry.k8s.io/sig-storage/nfs-subdir-external-provisioner
+    tag: "v4.0.2"

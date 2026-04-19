@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "lognest.fullname" . }}-collector-script
+  namespace: {{ include "lognest.namespace" . }}
+  labels:
+    {{- include "lognest.labels" . | nindent 4 }}
+data:
+  collect.sh: |
+    #!/bin/sh
+    set -e
+
+    LOGS_DIR="/data/{{ .Values.storage.logsDir }}"
+    ZIP_DIR="/data/{{ .Values.storage.logsZipDir }}"
+    RETENTION_MONTHS="{{ .Values.collector.retentionMonths }}"
+    TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+    DATE=$(date +"%Y-%m-%d")
+    RUN_DIR="${LOGS_DIR}/${TIMESTAMP}"
+
+    echo "[LogNest] Starting log collection at ${TIMESTAMP}"
+
+    mkdir -p "${RUN_DIR}"
+    mkdir -p "${ZIP_DIR}"
+
+    # --------------------------------------------------------
+    # Collect logs from all pods in all (or selected) namespaces
+    # --------------------------------------------------------
+    {{- if .Values.collector.allNamespaces }}
+    NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}')
+    {{- else }}
+    NAMESPACES="{{ .Values.collector.namespaces | join " " }}"
+    {{- end }}
+
+    for NS in ${NAMESPACES}; do
+      PODS=$(kubectl get pods -n "${NS}" --no-headers -o custom-columns=":metadata.name" 2>/dev/null || true)
+      for POD in ${PODS}; do
+        CONTAINERS=$(kubectl get pod "${POD}" -n "${NS}" \
+          -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || true)
+        for CONTAINER in ${CONTAINERS}; do
+          LOG_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.log"
+          echo "[LogNest] Collecting: ns=${NS} pod=${POD} container=${CONTAINER}"
+          kubectl logs "${POD}" -n "${NS}" -c "${CONTAINER}" \
+            --timestamps=true 2>/dev/null > "${LOG_FILE}" || \
+            echo "[WARN] Could not collect logs for ${POD}/${CONTAINER}" > "${LOG_FILE}"
+        done
+      done
+    done
+
+    echo "[LogNest] Log collection complete. Files in: ${RUN_DIR}"
+
+    # --------------------------------------------------------
+    # Compress the collected run into logs_zip
+    # --------------------------------------------------------
+    ZIP_FILE="${ZIP_DIR}/lognest_${TIMESTAMP}.tar.gz"
+    tar -czf "${ZIP_FILE}" -C "${LOGS_DIR}" "${TIMESTAMP}"
+    echo "[LogNest] Compressed archive created: ${ZIP_FILE}"
+
+    # --------------------------------------------------------
+    # Retention: delete runs older than RETENTION_MONTHS months
+    # --------------------------------------------------------
+    CUTOFF_DATE=$(date -d "-${RETENTION_MONTHS} month" +"%Y-%m-%d_%H-%M-%S" 2>/dev/null || \
+                  date -v "-${RETENTION_MONTHS}m" +"%Y-%m-%d_%H-%M-%S" 2>/dev/null || true)
+
+    if [ -n "${CUTOFF_DATE}" ]; then
+      echo "[LogNest] Applying retention policy: removing runs older than ${RETENTION_MONTHS} month(s)"
+      for DIR in "${LOGS_DIR}"/*/; do
+        DIRNAME=$(basename "${DIR}")
+        if [ "${DIRNAME}" \< "${CUTOFF_DATE}" ]; then
+          echo "[LogNest] Deleting old run: ${DIRNAME}"
+          rm -rf "${DIR}"
+        fi
+      done
+      for ZIPF in "${ZIP_DIR}"/lognest_*.tar.gz; do
+        ZIPNAME=$(basename "${ZIPF}" .tar.gz | sed 's/lognest_//')
+        if [ "${ZIPNAME}" \< "${CUTOFF_DATE}" ]; then
+          echo "[LogNest] Deleting old zip: ${ZIPF}"
+          rm -f "${ZIPF}"
+        fi
+      done
+    fi
+
+    echo "[LogNest] Done."

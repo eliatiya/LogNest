@@ -1,0 +1,15 @@
+{{- if .Values.storage.storageClass.create }}
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: {{ .Values.storage.storageClass.name }}
+  labels:
+    {{- include "lognest.labels" . | nindent 4 }}
+provisioner: {{ .Values.storage.storageClass.provisioner }}
+reclaimPolicy: {{ .Values.storage.storageClass.reclaimPolicy }}
+volumeBindingMode: {{ .Values.storage.storageClass.volumeBindingMode }}
+parameters:
+  archiveOnDelete: {{ .Values.storage.storageClass.archiveOnDelete | quote }}
+  server: {{ .Values.storage.nfsServer | quote }}
+  path: {{ .Values.storage.nfsPath | quote }}
+{{- end }}

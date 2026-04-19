@@ -1,0 +1,8 @@
+{{- if .Values.namespace.create }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ include "lognest.namespace" . }}
+  labels:
+    {{- include "lognest.labels" . | nindent 4 }}
+{{- end }}

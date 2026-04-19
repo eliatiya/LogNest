@@ -1,0 +1,81 @@
+{{- $root := . }}
+{{- $schedules := list .Values.collector.schedule1 .Values.collector.schedule2 }}
+{{- range $i, $schedule := $schedules }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "lognest.fullname" $root }}-collector-{{ add $i 1 }}
+  namespace: {{ include "lognest.namespace" $root }}
+  labels:
+    {{- include "lognest.labels" $root | nindent 4 }}
+    lognest/component: collector
+spec:
+  schedule: {{ $schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            {{- include "lognest.selectorLabels" $root | nindent 12 }}
+            lognest/component: collector
+        spec:
+          serviceAccountName: {{ $root.Values.serviceAccount.name }}
+          restartPolicy: OnFailure
+          {{- include "lognest.imagePullSecrets" $root | nindent 10 }}
+          {{- with $root.Values.collector.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $root.Values.collector.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with $root.Values.collector.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          initContainers:
+            - name: init-dirs
+              image: {{ include "lognest.image" (dict "registry" $root.Values.global.imageRegistry "repository" "busybox" "tag" "1.36") }}
+              command:
+                - sh
+                - -c
+                - |
+                  mkdir -p /data/{{ $root.Values.storage.logsDir }}
+                  mkdir -p /data/{{ $root.Values.storage.logsZipDir }}
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+          containers:
+            - name: collector
+              image: {{ include "lognest.image" (dict "registry" $root.Values.global.imageRegistry "repository" $root.Values.collector.image.repository "tag" $root.Values.collector.image.tag) }}
+              imagePullPolicy: {{ $root.Values.collector.image.pullPolicy }}
+              command:
+                - /bin/sh
+                - /scripts/collect.sh
+              env:
+                - name: LOGS_DIR
+                  value: /data/{{ $root.Values.storage.logsDir }}
+                - name: ZIP_DIR
+                  value: /data/{{ $root.Values.storage.logsZipDir }}
+              resources:
+                {{- toYaml $root.Values.collector.resources | nindent 16 }}
+              volumeMounts:
+                - name: data
+                  mountPath: /data
+                - name: scripts
+                  mountPath: /scripts
+          volumes:
+            - name: data
+              persistentVolumeClaim:
+                claimName: {{ $root.Values.storage.pvc.name }}
+            - name: scripts
+              configMap:
+                name: {{ include "lognest.fullname" $root }}-collector-script
+                defaultMode: 0755
+{{- end }}

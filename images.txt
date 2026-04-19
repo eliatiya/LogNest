@@ -1,0 +1,14 @@
+# ============================================================
+# LogNest - Air-Gap Image List
+# ============================================================
+# Pull these images on an internet-connected machine, then
+# push them to your private registry before installing.
+#
+# Usage:
+#   ./scripts/pull-push-images.sh registry.internal:5000
+# ============================================================
+
+bitnami/kubectl:1.29.3
+python:3.11-slim
+busybox:1.36
+registry.k8s.io/sig-storage/nfs-subdir-external-provisioner:v4.0.2

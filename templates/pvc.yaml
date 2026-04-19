@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Values.storage.pvc.name }}
+  namespace: {{ include "lognest.namespace" . }}
+  labels:
+    {{- include "lognest.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - {{ .Values.storage.pvc.accessMode }}
+  storageClassName: {{ .Values.storage.storageClass.name }}
+  resources:
+    requests:
+      storage: {{ .Values.storage.pvc.size }}
