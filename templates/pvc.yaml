@@ -8,7 +8,7 @@ metadata:
 spec:
   accessModes:
     - {{ .Values.storage.pvc.accessMode }}
-  storageClassName: {{ .Values.storage.storageClass.name }}
+  storageClassName: {{ .Values.storage.storageClassName }}
   resources:
     requests:
       storage: {{ .Values.storage.pvc.size }}

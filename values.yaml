@@ -63,14 +63,9 @@ storage:
   # NFS exported path
   nfsPath: "/exports/lognest"
 
-  storageClass:
-    create: true
-    name: lognest-nfs
-    # NFS provisioner image (nfs-subdir-external-provisioner)
-    provisioner: cluster.local/nfs-subdir-external-provisioner
-    reclaimPolicy: Retain
-    volumeBindingMode: Immediate
-    archiveOnDelete: "false"
+  # StorageClass to use for the PVC.
+  # Uses the nfs-client StorageClass that Rancher/RKE2 provides out of the box.
+  storageClassName: nfs-client
 
   pvc:
     name: lognest-data
@@ -141,6 +136,3 @@ images:
   ui:
     repository: python
     tag: "3.11-slim"
-  nfsProvisioner:
-    repository: registry.k8s.io/sig-storage/nfs-subdir-external-provisioner
-    tag: "v4.0.2"

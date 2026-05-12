@@ -58,22 +58,12 @@ LogNest is a Helm chart that deploys a complete log management solution on Kuber
 | Kubernetes 1.24+ | Tested on RKE2 |
 | Helm 3.x | `helm version` |
 | NFS server | Accessible from all cluster nodes |
-| NFS subdir external provisioner | Must be installed in the cluster |
+| `nfs-client` StorageClass | Already present in Rancher/RKE2 clusters |
 | `nginx` IngressClass | Default in RKE2 |
 
 ### Install NFS Subdir External Provisioner (if not present)
 
-```bash
-helm repo add nfs-subdir-external-provisioner \
-  https://kubernetes-sigs.github.io/nfs-subdir-external-provisioner/
-
-helm install nfs-provisioner \
-  nfs-subdir-external-provisioner/nfs-subdir-external-provisioner \
-  --set nfs.server=<NFS_SERVER_IP> \
-  --set nfs.path=<NFS_EXPORT_PATH>
-```
-
-> **Air-gap:** See [Air-Gap Installation](#-air-gap-installation) before running any `helm install`.
+> RKE2 clusters managed by Rancher already have the `nfs-client` StorageClass available. No additional provisioner installation is needed.
 
 ---
 
@@ -189,7 +179,7 @@ helm install lognest . \
 |---|---|---|
 | `storage.nfsServer` | `192.168.1.100` | NFS server address |
 | `storage.nfsPath` | `/exports/lognest` | NFS export path |
-| `storage.storageClass.name` | `lognest-nfs` | StorageClass name |
+| `storage.storageClassName` | `nfs-client` | StorageClass name (Rancher/RKE2 built-in) |
 | `storage.pvc.size` | `100Gi` | PVC size |
 | `storage.logsDir` | `logs` | Subdirectory for raw logs |
 | `storage.logsZipDir` | `logs_zip` | Subdirectory for compressed archives |

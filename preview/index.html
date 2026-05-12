@@ -1,0 +1,446 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>LogNest — Preview</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{font-family:'Segoe UI',Arial,sans-serif;background:#0f1117;color:#e0e0e0;min-height:100vh}
+
+    /* ── Header ── */
+    header{background:#1a1d27;padding:16px 32px;display:flex;align-items:center;gap:24px;border-bottom:2px solid #2a2d3a}
+    header h1{font-size:1.4rem;color:#7eb8f7;letter-spacing:1px;white-space:nowrap}
+    nav{display:flex;gap:0}
+    nav button{
+      padding:10px 28px;background:none;border:none;border-bottom:3px solid transparent;
+      color:#aaa;cursor:pointer;font-size:.95rem;transition:.2s;font-family:inherit
+    }
+    nav button.active,nav button:hover{color:#7eb8f7;border-bottom-color:#7eb8f7}
+
+    /* ── Layout ── */
+    .container{max-width:1200px;margin:32px auto;padding:0 24px}
+    .tab-panel{display:none}
+    .tab-panel.active{display:block}
+
+    /* ── Card ── */
+    .card{background:#1a1d27;border-radius:8px;padding:24px;margin-bottom:24px;border:1px solid #2a2d3a}
+    .card-title{font-size:1rem;font-weight:600;color:#7eb8f7;margin-bottom:16px}
+
+    /* ── Form controls ── */
+    .row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-end}
+    label{font-size:.82rem;color:#888;display:block;margin-bottom:5px}
+    select{
+      background:#0f1117;color:#e0e0e0;border:1px solid #3a3d4a;
+      border-radius:4px;padding:8px 12px;font-size:.9rem;min-width:220px;cursor:pointer
+    }
+    select:focus{outline:none;border-color:#7eb8f7}
+
+    /* ── Buttons ── */
+    .btn{
+      background:#2563eb;color:#fff;border:none;border-radius:4px;
+      padding:8px 20px;cursor:pointer;font-size:.88rem;text-decoration:none;
+      display:inline-flex;align-items:center;gap:6px;transition:.15s
+    }
+    .btn:hover{background:#1d4ed8}
+    .btn-sm{padding:5px 14px;font-size:.8rem}
+    .btn-outline{background:transparent;border:1px solid #3a3d4a;color:#aaa}
+    .btn-outline:hover{border-color:#7eb8f7;color:#7eb8f7;background:transparent}
+
+    /* ── Log viewer ── */
+    pre{
+      background:#0a0c12;border-radius:6px;padding:16px;overflow:auto;
+      max-height:480px;font-size:.8rem;line-height:1.7;white-space:pre-wrap;
+      word-break:break-all;border:1px solid #1e2130
+    }
+    .log-error{color:#f87171}
+    .log-warn {color:#fbbf24}
+    .log-debug{color:#a78bfa}
+    .log-info {color:#34d399}
+    .log-ts   {color:#4b5563}
+
+    /* ── Table ── */
+    table{width:100%;border-collapse:collapse}
+    th,td{text-align:left;padding:11px 16px;border-bottom:1px solid #1e2130;font-size:.88rem}
+    th{color:#7eb8f7;font-weight:600;background:#141720}
+    tr:hover td{background:#1c1f2e}
+    td.mono{font-family:monospace;font-size:.82rem;color:#c0c8e0}
+
+    /* ── Badges ── */
+    .badge{display:inline-block;padding:2px 9px;border-radius:12px;font-size:.72rem;font-weight:700;letter-spacing:.3px}
+    .badge-error{background:#7f1d1d;color:#fca5a5}
+    .badge-warn {background:#78350f;color:#fde68a}
+    .badge-info {background:#064e3b;color:#6ee7b7}
+    .badge-debug{background:#312e81;color:#c4b5fd}
+
+    /* ── Stats bar ── */
+    .stats{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:0}
+    .stat-box{background:#141720;border:1px solid #2a2d3a;border-radius:6px;padding:14px 20px;flex:1;min-width:130px}
+    .stat-box .num{font-size:1.6rem;font-weight:700;color:#7eb8f7}
+    .stat-box .lbl{font-size:.75rem;color:#666;margin-top:2px}
+
+    /* ── Empty state ── */
+    .empty{color:#444;font-style:italic;padding:24px 0;text-align:center}
+
+    /* ── Divider ── */
+    .divider{height:1px;background:#1e2130;margin:16px 0}
+
+    /* ── Scrollbar ── */
+    ::-webkit-scrollbar{width:6px;height:6px}
+    ::-webkit-scrollbar-track{background:#0f1117}
+    ::-webkit-scrollbar-thumb{background:#2a2d3a;border-radius:3px}
+    ::-webkit-scrollbar-thumb:hover{background:#3a3d4a}
+
+    /* ── Tooltip ── */
+    .tip{font-size:.75rem;color:#555;margin-top:6px}
+
+    /* ── File size pill ── */
+    .size-pill{background:#1e2130;border-radius:4px;padding:2px 8px;font-size:.75rem;color:#666;font-family:monospace}
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════ HEADER -->
+<header>
+  <h1>🪺 LogNest</h1>
+  <nav>
+    <button class="active" onclick="switchTab('dashboard', this)">📊 Dashboard</button>
+    <button onclick="switchTab('downloads', this)">📦 Downloads</button>
+    <button onclick="switchTab('files', this)">📄 Files</button>
+  </nav>
+</header>
+
+<div class="container">
+
+  <!-- ══════════════════════════════════════════ TAB 1 — DASHBOARD -->
+  <div id="tab-dashboard" class="tab-panel active">
+
+    <!-- Stats row -->
+    <div class="card">
+      <div class="stats">
+        <div class="stat-box"><div class="num">247</div><div class="lbl">Total Log Files</div></div>
+        <div class="stat-box"><div class="num">18</div><div class="lbl">Collection Runs</div></div>
+        <div class="stat-box"><div class="num">34</div><div class="lbl">Pods Tracked</div></div>
+        <div class="stat-box"><div class="num">4.2 GB</div><div class="lbl">Storage Used</div></div>
+        <div class="stat-box"><div class="num">1</div><div class="lbl">Month Retention</div></div>
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>Run (date / time)</label>
+          <select id="sel-run" onchange="onRunChange()">
+            <option value="">-- Select run --</option>
+            <option value="r1" selected>2026-04-19_14-00-01</option>
+            <option value="r2">2026-04-19_02-00-01</option>
+            <option value="r3">2026-04-18_14-00-02</option>
+            <option value="r4">2026-04-18_02-00-01</option>
+            <option value="r5">2026-04-17_14-00-03</option>
+          </select>
+        </div>
+        <div id="pod-wrap">
+          <label>Pod / Container</label>
+          <select id="sel-pod" onchange="onPodChange()">
+            <option value="">-- Select pod --</option>
+            <option value="api" selected>production__api-deploy-7d9f8b-xk2p9__api</option>
+            <option value="db">production__postgres-0__postgres</option>
+            <option value="nginx">ingress-nginx__controller-abc12__controller</option>
+            <option value="coredns">kube-system__coredns-5d78c9869d-r4xpq__coredns</option>
+            <option value="metrics">monitoring__prometheus-0__prometheus</option>
+          </select>
+        </div>
+        <div id="level-wrap">
+          <label>Level filter</label>
+          <select id="sel-level" onchange="onLevelChange()">
+            <option value="all">All levels</option>
+            <option value="error">🔴 Error</option>
+            <option value="warning">🟡 Warning</option>
+            <option value="info" selected>🟢 Info</option>
+            <option value="debug">🟣 Debug</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- Log viewer -->
+    <div class="card" id="log-card">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <span class="card-title" id="log-title">production__api-deploy-7d9f8b-xk2p9__api__2026-04-19_14-00-01.log</span>
+        <a class="btn btn-outline btn-sm" href="#">⬇ Download this file</a>
+      </div>
+      <pre id="log-pre"></pre>
+    </div>
+
+  </div><!-- /tab-dashboard -->
+
+  <!-- ══════════════════════════════════════════ TAB 2 — DOWNLOADS -->
+  <div id="tab-downloads" class="tab-panel">
+    <div class="card">
+      <div class="card-title">📦 Compressed Archives</div>
+      <p class="tip" style="margin-bottom:16px">One archive is created after each collection run. Download by date to get all pod logs for that run.</p>
+      <table>
+        <thead>
+          <tr><th>Archive</th><th>Date</th><th>Size</th><th>Files</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="mono">lognest_2026-04-19_14-00-01.tar.gz</td>
+            <td>Apr 19, 2026 — 14:00</td>
+            <td><span class="size-pill">238.4 MB</span></td>
+            <td>34</td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td class="mono">lognest_2026-04-19_02-00-01.tar.gz</td>
+            <td>Apr 19, 2026 — 02:00</td>
+            <td><span class="size-pill">241.1 MB</span></td>
+            <td>34</td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td class="mono">lognest_2026-04-18_14-00-02.tar.gz</td>
+            <td>Apr 18, 2026 — 14:00</td>
+            <td><span class="size-pill">229.7 MB</span></td>
+            <td>33</td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td class="mono">lognest_2026-04-18_02-00-01.tar.gz</td>
+            <td>Apr 18, 2026 — 02:00</td>
+            <td><span class="size-pill">231.2 MB</span></td>
+            <td>33</td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td class="mono">lognest_2026-04-17_14-00-03.tar.gz</td>
+            <td>Apr 17, 2026 — 14:00</td>
+            <td><span class="size-pill">218.9 MB</span></td>
+            <td>31</td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td class="mono">lognest_2026-04-17_02-00-01.tar.gz</td>
+            <td>Apr 17, 2026 — 02:00</td>
+            <td><span class="size-pill">220.3 MB</span></td>
+            <td>31</td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div><!-- /tab-downloads -->
+
+  <!-- ══════════════════════════════════════════ TAB 3 — FILES -->
+  <div id="tab-files" class="tab-panel">
+    <div class="card">
+      <div class="row">
+        <div>
+          <label>Run (date / time)</label>
+          <select id="sel-run-files" onchange="onRunFilesChange()">
+            <option value="">-- Select run --</option>
+            <option value="r1" selected>2026-04-19_14-00-01</option>
+            <option value="r2">2026-04-19_02-00-01</option>
+            <option value="r3">2026-04-18_14-00-02</option>
+            <option value="r4">2026-04-18_02-00-01</option>
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="card" id="files-table-card">
+      <div class="card-title">📄 Log Files — run: 2026-04-19_14-00-01</div>
+      <table>
+        <thead>
+          <tr><th>Namespace</th><th>Pod</th><th>Container</th><th>Size</th><th>Action</th></tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><span class="badge badge-info">production</span></td>
+            <td class="mono">api-deploy-7d9f8b-xk2p9</td>
+            <td class="mono">api</td>
+            <td><span class="size-pill">12.4 MB</span></td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-info">production</span></td>
+            <td class="mono">postgres-0</td>
+            <td class="mono">postgres</td>
+            <td><span class="size-pill">8.1 MB</span></td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-warn">ingress-nginx</span></td>
+            <td class="mono">controller-abc12</td>
+            <td class="mono">controller</td>
+            <td><span class="size-pill">3.7 MB</span></td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-debug">kube-system</span></td>
+            <td class="mono">coredns-5d78c9869d-r4xpq</td>
+            <td class="mono">coredns</td>
+            <td><span class="size-pill">1.2 MB</span></td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-debug">kube-system</span></td>
+            <td class="mono">kube-proxy-n8x2k</td>
+            <td class="mono">kube-proxy</td>
+            <td><span class="size-pill">0.9 MB</span></td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-error">monitoring</span></td>
+            <td class="mono">prometheus-0</td>
+            <td class="mono">prometheus</td>
+            <td><span class="size-pill">22.8 MB</span></td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-error">monitoring</span></td>
+            <td class="mono">grafana-6d8f9b-p2qrs</td>
+            <td class="mono">grafana</td>
+            <td><span class="size-pill">5.3 MB</span></td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+          <tr>
+            <td><span class="badge badge-info">lognest</span></td>
+            <td class="mono">lognest-ui-5f7d9c-m3nop</td>
+            <td class="mono">ui</td>
+            <td><span class="size-pill">0.4 MB</span></td>
+            <td><a class="btn btn-sm" href="#">⬇ Download</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div><!-- /tab-files -->
+
+</div><!-- /container -->
+
+<script>
+  /* ── Tab switching ── */
+  function switchTab(name, btn) {
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    document.querySelectorAll('nav button').forEach(b => b.classList.remove('active'));
+    document.getElementById('tab-' + name).classList.add('active');
+    btn.classList.add('active');
+  }
+
+  /* ── Mock log data per pod ── */
+  const LOGS = {
+    api: `2026-04-19T14:00:03.112Z INFO  Server started on :8080
+2026-04-19T14:00:03.201Z INFO  Connected to database postgres://prod-db:5432
+2026-04-19T14:00:04.445Z INFO  GET /api/v1/health 200 4ms
+2026-04-19T14:00:05.112Z INFO  GET /api/v1/users 200 12ms
+2026-04-19T14:00:06.334Z WARNING Rate limit approaching for client 10.0.1.45 (480/500 req/min)
+2026-04-19T14:00:07.001Z INFO  POST /api/v1/orders 201 34ms
+2026-04-19T14:00:08.221Z ERROR Failed to connect to cache service: connection refused (redis:6379)
+2026-04-19T14:00:08.222Z ERROR Retrying cache connection (attempt 1/3)
+2026-04-19T14:00:09.445Z WARNING Cache miss rate elevated: 78% (threshold: 50%)
+2026-04-19T14:00:10.001Z INFO  GET /api/v1/products 200 8ms
+2026-04-19T14:00:11.334Z DEBUG Processing order id=8821 user=4492 items=3
+2026-04-19T14:00:12.112Z INFO  POST /api/v1/orders 201 29ms
+2026-04-19T14:00:13.445Z ERROR Unhandled exception in /api/v1/checkout: NullPointerException at checkout.go:142
+2026-04-19T14:00:13.446Z ERROR   at processPayment() checkout.go:98
+2026-04-19T14:00:13.447Z ERROR   at handleRequest() router.go:55
+2026-04-19T14:00:14.001Z INFO  GET /api/v1/health 200 3ms
+2026-04-19T14:00:15.221Z DEBUG GC pause 12ms, heap 142MB/512MB
+2026-04-19T14:00:16.334Z INFO  Metrics flushed to prometheus
+2026-04-19T14:00:17.112Z WARNING Slow query detected: SELECT * FROM orders WHERE user_id=4492 took 1240ms
+2026-04-19T14:00:18.445Z INFO  GET /api/v1/users/4492 200 1244ms
+2026-04-19T14:00:19.001Z DEBUG Request trace id=a3f9c2 span=checkout duration=1280ms`,
+
+    db: `2026-04-19T14:00:01.001Z INFO  PostgreSQL 15.3 started
+2026-04-19T14:00:01.112Z INFO  Listening on 0.0.0.0:5432
+2026-04-19T14:00:02.334Z INFO  Checkpoint starting: time
+2026-04-19T14:00:03.445Z INFO  Connection received: host=10.0.1.12 port=54321
+2026-04-19T14:00:04.001Z DEBUG autovacuum: processing table "orders"
+2026-04-19T14:00:05.221Z WARNING slow query: duration=1240ms statement: SELECT * FROM orders WHERE user_id=4492
+2026-04-19T14:00:06.334Z INFO  Checkpoint complete: wrote 128 buffers (0.8%)
+2026-04-19T14:00:07.112Z ERROR could not write to file "pg_wal/000000010000000000000001": No space left on device
+2026-04-19T14:00:07.113Z ERROR PANIC: could not write to file — database will shut down
+2026-04-19T14:00:08.445Z INFO  Database system is shut down`,
+
+    nginx: `2026-04-19T14:00:01.334Z INFO  NGINX Ingress Controller v1.9.4 starting
+2026-04-19T14:00:02.112Z INFO  Backend synced successfully
+2026-04-19T14:00:03.445Z INFO  10.0.1.5 - GET /api/v1/health HTTP/1.1 200
+2026-04-19T14:00:04.001Z INFO  10.0.1.8 - GET / HTTP/1.1 301
+2026-04-19T14:00:05.221Z WARNING upstream response time 2.341s for /api/v1/checkout
+2026-04-19T14:00:06.334Z INFO  10.0.1.12 - POST /api/v1/orders HTTP/1.1 201
+2026-04-19T14:00:07.112Z DEBUG SSL handshake completed for 10.0.1.45
+2026-04-19T14:00:08.445Z ERROR upstream timed out (110: Connection timed out) while reading response header from upstream`,
+
+    coredns: `2026-04-19T14:00:01.001Z INFO  CoreDNS-1.11.1 starting
+2026-04-19T14:00:01.112Z INFO  Listening on :53
+2026-04-19T14:00:02.334Z DEBUG Resolved api-svc.production.svc.cluster.local -> 10.96.0.45
+2026-04-19T14:00:03.445Z DEBUG Resolved postgres.production.svc.cluster.local -> 10.96.0.12
+2026-04-19T14:00:04.001Z INFO  Health check OK
+2026-04-19T14:00:05.221Z WARNING SERVFAIL for unknown-service.production.svc.cluster.local
+2026-04-19T14:00:06.334Z DEBUG Resolved redis.production.svc.cluster.local -> 10.96.0.88`,
+
+    metrics: `2026-04-19T14:00:01.334Z INFO  Prometheus 2.50.1 starting
+2026-04-19T14:00:02.112Z INFO  TSDB started, retention=15d
+2026-04-19T14:00:03.445Z INFO  Scraping target: api-svc:8080/metrics
+2026-04-19T14:00:04.001Z INFO  Scraping target: postgres-exporter:9187/metrics
+2026-04-19T14:00:05.221Z WARNING Scrape target unreachable: redis-exporter:9121 (connection refused)
+2026-04-19T14:00:06.334Z ERROR TSDB compaction failed: unexpected EOF in block 01HV3K2X
+2026-04-19T14:00:07.112Z INFO  Rule evaluation complete: 42 rules in 12ms
+2026-04-19T14:00:08.445Z DEBUG WAL replay complete, 18420 samples loaded`
+  };
+
+  const LEVEL_COLORS = {
+    error:   'log-error',
+    warning: 'log-warn',
+    warn:    'log-warn',
+    debug:   'log-debug',
+    info:    'log-info',
+  };
+
+  function colorize(text) {
+    return text.split('\n').map(line => {
+      const lower = line.toLowerCase();
+      let cls = 'log-ts';
+      if (/\berror\b/.test(lower))   cls = 'log-error';
+      else if (/\bwarn/.test(lower)) cls = 'log-warn';
+      else if (/\bdebug\b/.test(lower)) cls = 'log-debug';
+      else if (/\binfo\b/.test(lower))  cls = 'log-info';
+      return `<span class="${cls}">${escHtml(line)}</span>`;
+    }).join('\n');
+  }
+
+  function filterLog(text, level) {
+    if (!level || level === 'all') return text;
+    return text.split('\n').filter(l => {
+      const lo = l.toLowerCase();
+      if (level === 'error')   return /\berror\b/.test(lo);
+      if (level === 'warning') return /\bwarn/.test(lo);
+      if (level === 'debug')   return /\bdebug\b/.test(lo);
+      if (level === 'info')    return /\binfo\b/.test(lo);
+      return true;
+    }).join('\n');
+  }
+
+  function escHtml(s) {
+    return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+
+  function renderLog() {
+    const pod   = document.getElementById('sel-pod').value || 'api';
+    const level = document.getElementById('sel-level').value;
+    const raw   = LOGS[pod] || '';
+    const filtered = filterLog(raw, level);
+    document.getElementById('log-pre').innerHTML = colorize(filtered) || '<span style="color:#444;font-style:italic">No lines match this filter.</span>';
+  }
+
+  function onRunChange()  { renderLog(); }
+  function onPodChange()  { renderLog(); }
+  function onLevelChange(){ renderLog(); }
+  function onRunFilesChange() {}
+
+  /* initial render */
+  renderLog();
+</script>
+</body>
+</html>
