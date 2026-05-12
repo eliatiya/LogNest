@@ -37,8 +37,8 @@ collector:
   retentionMonths: 1
 
   image:
-    repository: bitnami/kubectl
-    tag: "1.29.3"
+    repository: rancher/kubectl
+    tag: "v1.30.0"
     pullPolicy: IfNotPresent
 
   resources:
@@ -131,8 +131,8 @@ serviceAccount:
 # automatically. You can also override individual images here.
 images:
   collector:
-    repository: bitnami/kubectl
-    tag: "1.29.3"
+    repository: rancher/kubectl
+    tag: "v1.30.0"
   ui:
     repository: python
     tag: "3.11-slim"

@@ -8,6 +8,6 @@
 #   ./scripts/pull-push-images.sh registry.internal:5000
 # ============================================================
 
-bitnami/kubectl:1.29.3
+rancher/kubectl:v1.30.0
 python:3.11-slim
 busybox:1.36

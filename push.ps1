@@ -1,3 +1,3 @@
 git add -A
-git commit -m "fix: remove StorageClass creation, use existing nfs-client from Rancher/RKE2"
+git commit -m "fix: switch collector image from bitnami/kubectl to rancher/kubectl:v1.30.0"
 git push
