@@ -14,7 +14,8 @@ global:
 # Namespace
 # ============================================================
 namespace:
-  create: true
+  # Name of the namespace to deploy into.
+  # Create it beforehand or use --create-namespace on helm install.
   name: lognest
 
 # ============================================================

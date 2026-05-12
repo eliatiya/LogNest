@@ -1,3 +1,3 @@
 git add -A
-git commit -m "fix: set default NFS server to 127.0.0.1"
+git commit -m "fix: remove namespace template, let Helm manage it via --create-namespace"
 git push

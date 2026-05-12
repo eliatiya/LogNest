@@ -98,6 +98,11 @@ helm install lognest . \
   -f values.yaml
 ```
 
+> `--create-namespace` tells Helm to create the namespace itself (with correct ownership labels). If the namespace already exists from a previous attempt, delete it first:
+> ```bash
+> kubectl delete namespace lognest
+> ```
+
 ### 4. Access the dashboard
 
 Add the hostname to your DNS or `/etc/hosts`, then open:
