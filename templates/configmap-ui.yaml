@@ -11,9 +11,3 @@ data:
   requirements.txt: |
     flask==3.0.3
     gunicorn==22.0.0
-  start.sh: |
-    #!/bin/sh
-    set -e
-    pip install --no-index --find-links=/wheels flask gunicorn 2>/dev/null || \
-    pip install flask==3.0.3 gunicorn==22.0.0
-    exec gunicorn --workers 2 --bind 0.0.0.0:8080 --timeout 120 app:app
