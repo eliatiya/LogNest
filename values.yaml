@@ -59,7 +59,7 @@ collector:
 # ============================================================
 storage:
   # NFS server address
-  nfsServer: "192.168.1.100"
+  nfsServer: "127.0.0.1"
   # NFS exported path
   nfsPath: "/exports/lognest"
 
