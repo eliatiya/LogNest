@@ -38,8 +38,8 @@ collector:
   retentionMonths: 1
 
   image:
-    repository: rancher/kubectl
-    tag: "v1.30.0"
+    repository: alpine/k8s
+    tag: "1.30.2"
     pullPolicy: IfNotPresent
 
   resources:
@@ -132,8 +132,8 @@ serviceAccount:
 # automatically. You can also override individual images here.
 images:
   collector:
-    repository: rancher/kubectl
-    tag: "v1.30.0"
+    repository: alpine/k8s
+    tag: "1.30.2"
   ui:
     repository: python
     tag: "3.11-slim"

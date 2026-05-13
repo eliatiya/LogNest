@@ -8,5 +8,5 @@
 #   ./scripts/pull-push-images.sh registry.internal:5000
 # ============================================================
 
-rancher/kubectl:v1.30.0
+alpine/k8s:1.30.2
 python:3.11-slim
