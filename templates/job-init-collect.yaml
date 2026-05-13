@@ -1,0 +1,67 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "lognest.fullname" . }}-init-collect
+  namespace: {{ include "lognest.namespace" . }}
+  labels:
+    {{- include "lognest.labels" . | nindent 4 }}
+    lognest/component: collector
+  annotations:
+    # Run once immediately after helm install completes
+    "helm.sh/hook": post-install
+    "helm.sh/hook-weight": "0"
+    # Clean up the job pod after it finishes (keeps the cluster tidy)
+    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  template:
+    metadata:
+      labels:
+        {{- include "lognest.selectorLabels" . | nindent 8 }}
+        lognest/component: collector
+        lognest/job-type: init
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      restartPolicy: Never
+      {{- include "lognest.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.collector.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.collector.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.collector.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: init-collector
+          image: {{ include "lognest.image" (dict "registry" .Values.global.imageRegistry "repository" .Values.collector.image.repository "tag" .Values.collector.image.tag) }}
+          imagePullPolicy: {{ .Values.collector.image.pullPolicy }}
+          command:
+            - /bin/sh
+            - /scripts/collect.sh
+          env:
+            - name: LOGS_DIR
+              value: /data/{{ .Values.storage.logsDir }}
+            - name: ZIP_DIR
+              value: /data/{{ .Values.storage.logsZipDir }}
+          resources:
+            {{- toYaml .Values.collector.resources | nindent 12 }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.storage.pvc.name }}
+        - name: scripts
+          configMap:
+            name: {{ include "lognest.fullname" . }}-collector-script
+            defaultMode: 0755
