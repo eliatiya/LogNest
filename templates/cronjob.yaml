@@ -14,10 +14,12 @@ spec:
   schedule: {{ $schedule | quote }}
   concurrencyPolicy: Forbid
   successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
   jobTemplate:
     spec:
-      backoffLimit: 2
+      # 0 = no retries; the script handles its own errors and always exits 0
+      backoffLimit: 0
+      activeDeadlineSeconds: 3600
       template:
         metadata:
           labels:
@@ -25,7 +27,7 @@ spec:
             lognest/component: collector
         spec:
           serviceAccountName: {{ $root.Values.serviceAccount.name }}
-          restartPolicy: OnFailure
+          restartPolicy: Never
           {{- include "lognest.imagePullSecrets" $root | nindent 10 }}
           {{- with $root.Values.collector.nodeSelector }}
           nodeSelector:
@@ -39,18 +41,6 @@ spec:
           affinity:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          initContainers:
-            - name: init-dirs
-              image: {{ include "lognest.image" (dict "registry" $root.Values.global.imageRegistry "repository" "busybox" "tag" "1.36") }}
-              command:
-                - sh
-                - -c
-                - |
-                  mkdir -p /data/{{ $root.Values.storage.logsDir }}
-                  mkdir -p /data/{{ $root.Values.storage.logsZipDir }}
-              volumeMounts:
-                - name: data
-                  mountPath: /data
           containers:
             - name: collector
               image: {{ include "lognest.image" (dict "registry" $root.Values.global.imageRegistry "repository" $root.Values.collector.image.repository "tag" $root.Values.collector.image.tag) }}
@@ -70,6 +60,7 @@ spec:
                   mountPath: /data
                 - name: scripts
                   mountPath: /scripts
+                  readOnly: true
           volumes:
             - name: data
               persistentVolumeClaim:

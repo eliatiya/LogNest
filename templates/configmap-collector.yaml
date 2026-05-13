@@ -8,75 +8,145 @@ metadata:
 data:
   collect.sh: |
     #!/bin/sh
-    set -e
+    # LogNest collector — intentionally NO set -e
+    # Every error is handled explicitly so one bad pod never kills the job.
 
-    LOGS_DIR="/data/{{ .Values.storage.logsDir }}"
-    ZIP_DIR="/data/{{ .Values.storage.logsZipDir }}"
+    LOGS_DIR="${LOGS_DIR:-/data/{{ .Values.storage.logsDir }}}"
+    ZIP_DIR="${ZIP_DIR:-/data/{{ .Values.storage.logsZipDir }}}"
     RETENTION_MONTHS="{{ .Values.collector.retentionMonths }}"
     TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
-    DATE=$(date +"%Y-%m-%d")
     RUN_DIR="${LOGS_DIR}/${TIMESTAMP}"
+    ERRORS=0
 
+    echo "[LogNest] ============================================"
     echo "[LogNest] Starting log collection at ${TIMESTAMP}"
-
-    mkdir -p "${RUN_DIR}"
-    mkdir -p "${ZIP_DIR}"
+    echo "[LogNest] LOGS_DIR=${LOGS_DIR}"
+    echo "[LogNest] ZIP_DIR=${ZIP_DIR}"
+    echo "[LogNest] ============================================"
 
     # --------------------------------------------------------
-    # Collect logs from all pods in all (or selected) namespaces
+    # Verify kubectl is available
+    # --------------------------------------------------------
+    if ! kubectl version --client > /dev/null 2>&1; then
+      echo "[LogNest] ERROR: kubectl not found or not working"
+      exit 1
+    fi
+    echo "[LogNest] kubectl OK: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+
+    # --------------------------------------------------------
+    # Create directories
+    # --------------------------------------------------------
+    mkdir -p "${RUN_DIR}" || { echo "[LogNest] ERROR: cannot create ${RUN_DIR}"; exit 1; }
+    mkdir -p "${ZIP_DIR}"  || { echo "[LogNest] ERROR: cannot create ${ZIP_DIR}";  exit 1; }
+    echo "[LogNest] Directories ready"
+
+    # --------------------------------------------------------
+    # Collect logs
     # --------------------------------------------------------
     {{- if .Values.collector.allNamespaces }}
-    NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}')
+    NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+    if [ -z "${NAMESPACES}" ]; then
+      echo "[LogNest] ERROR: could not list namespaces — check RBAC"
+      exit 1
+    fi
     {{- else }}
     NAMESPACES="{{ .Values.collector.namespaces | join " " }}"
     {{- end }}
 
+    echo "[LogNest] Namespaces: ${NAMESPACES}"
+    FILE_COUNT=0
+
     for NS in ${NAMESPACES}; do
-      PODS=$(kubectl get pods -n "${NS}" --no-headers -o custom-columns=":metadata.name" 2>/dev/null || true)
+      PODS=$(kubectl get pods -n "${NS}" \
+        --no-headers \
+        -o custom-columns=":metadata.name" 2>/dev/null) || continue
+
       for POD in ${PODS}; do
         CONTAINERS=$(kubectl get pod "${POD}" -n "${NS}" \
-          -o jsonpath='{.spec.containers[*].name}' 2>/dev/null || true)
+          -o jsonpath='{.spec.containers[*].name}' 2>/dev/null) || continue
+
         for CONTAINER in ${CONTAINERS}; do
           LOG_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.log"
-          echo "[LogNest] Collecting: ns=${NS} pod=${POD} container=${CONTAINER}"
-          kubectl logs "${POD}" -n "${NS}" -c "${CONTAINER}" \
-            --timestamps=true 2>/dev/null > "${LOG_FILE}" || \
-            echo "[WARN] Could not collect logs for ${POD}/${CONTAINER}" > "${LOG_FILE}"
+          echo "[LogNest] Collecting: ${NS}/${POD}/${CONTAINER}"
+
+          if kubectl logs "${POD}" \
+              -n "${NS}" \
+              -c "${CONTAINER}" \
+              --timestamps=true \
+              2>/dev/null > "${LOG_FILE}"; then
+            FILE_COUNT=$((FILE_COUNT + 1))
+          else
+            echo "[LogNest] WARN: could not collect ${NS}/${POD}/${CONTAINER}" > "${LOG_FILE}"
+            ERRORS=$((ERRORS + 1))
+          fi
         done
       done
     done
 
-    echo "[LogNest] Log collection complete. Files in: ${RUN_DIR}"
+    echo "[LogNest] Collection done — ${FILE_COUNT} files, ${ERRORS} warnings"
 
     # --------------------------------------------------------
-    # Compress the collected run into logs_zip
+    # Compress — only if we actually wrote files
     # --------------------------------------------------------
-    ZIP_FILE="${ZIP_DIR}/lognest_${TIMESTAMP}.tar.gz"
-    tar -czf "${ZIP_FILE}" -C "${LOGS_DIR}" "${TIMESTAMP}"
-    echo "[LogNest] Compressed archive created: ${ZIP_FILE}"
+    ACTUAL_FILES=$(find "${RUN_DIR}" -name "*.log" 2>/dev/null | wc -l)
+    if [ "${ACTUAL_FILES}" -gt 0 ]; then
+      ZIP_FILE="${ZIP_DIR}/lognest_${TIMESTAMP}.tar.gz"
+      if tar -czf "${ZIP_FILE}" -C "${LOGS_DIR}" "${TIMESTAMP}" 2>/dev/null; then
+        echo "[LogNest] Archive created: ${ZIP_FILE}"
+      else
+        echo "[LogNest] WARN: tar failed — check if tar is available in this image"
+        # Fallback: try to find tar elsewhere
+        TAR_BIN=$(which tar 2>/dev/null || find /usr /bin /sbin -name tar 2>/dev/null | head -1)
+        if [ -n "${TAR_BIN}" ]; then
+          "${TAR_BIN}" -czf "${ZIP_FILE}" -C "${LOGS_DIR}" "${TIMESTAMP}" 2>/dev/null && \
+            echo "[LogNest] Archive created via ${TAR_BIN}: ${ZIP_FILE}"
+        fi
+      fi
+    else
+      echo "[LogNest] WARN: no log files collected — skipping compression"
+    fi
 
     # --------------------------------------------------------
-    # Retention: delete runs older than RETENTION_MONTHS months
+    # Retention cleanup
     # --------------------------------------------------------
-    CUTOFF_DATE=$(date -d "-${RETENTION_MONTHS} month" +"%Y-%m-%d_%H-%M-%S" 2>/dev/null || \
-                  date -v "-${RETENTION_MONTHS}m" +"%Y-%m-%d_%H-%M-%S" 2>/dev/null || true)
+    # Use awk for date arithmetic — works in busybox and alpine
+    CUTOFF_EPOCH=$(awk -v months="${RETENTION_MONTHS}" \
+      'BEGIN { print systime() - (months * 30 * 86400) }' 2>/dev/null) || true
 
-    if [ -n "${CUTOFF_DATE}" ]; then
-      echo "[LogNest] Applying retention policy: removing runs older than ${RETENTION_MONTHS} month(s)"
+    if [ -n "${CUTOFF_EPOCH}" ]; then
+      echo "[LogNest] Retention: removing runs older than ${RETENTION_MONTHS} month(s)"
+
       for DIR in "${LOGS_DIR}"/*/; do
+        [ -d "${DIR}" ] || continue
         DIRNAME=$(basename "${DIR}")
-        if [ "${DIRNAME}" \< "${CUTOFF_DATE}" ]; then
+        # Convert dirname timestamp to epoch for comparison
+        DIR_EPOCH=$(echo "${DIRNAME}" | awk -F'[_-]' '{
+          cmd = "date -d \""$1"-"$2"-"$3" "$4":"$5":"$6"\" +%s 2>/dev/null"
+          cmd | getline ep; close(cmd); print ep+0
+        }' 2>/dev/null) || DIR_EPOCH=0
+
+        if [ "${DIR_EPOCH}" -gt 0 ] && [ "${DIR_EPOCH}" -lt "${CUTOFF_EPOCH}" ]; then
           echo "[LogNest] Deleting old run: ${DIRNAME}"
           rm -rf "${DIR}"
         fi
       done
+
       for ZIPF in "${ZIP_DIR}"/lognest_*.tar.gz; do
-        ZIPNAME=$(basename "${ZIPF}" .tar.gz | sed 's/lognest_//')
-        if [ "${ZIPNAME}" \< "${CUTOFF_DATE}" ]; then
+        [ -f "${ZIPF}" ] || continue
+        ZIPNAME=$(basename "${ZIPF}" .tar.gz | sed 's/^lognest_//')
+        ZIP_EPOCH=$(echo "${ZIPNAME}" | awk -F'[_-]' '{
+          cmd = "date -d \""$1"-"$2"-"$3" "$4":"$5":"$6"\" +%s 2>/dev/null"
+          cmd | getline ep; close(cmd); print ep+0
+        }' 2>/dev/null) || ZIP_EPOCH=0
+
+        if [ "${ZIP_EPOCH}" -gt 0 ] && [ "${ZIP_EPOCH}" -lt "${CUTOFF_EPOCH}" ]; then
           echo "[LogNest] Deleting old zip: ${ZIPF}"
           rm -f "${ZIPF}"
         fi
       done
     fi
 
-    echo "[LogNest] Done."
+    echo "[LogNest] ============================================"
+    echo "[LogNest] Done. Files collected: ${FILE_COUNT}, Warnings: ${ERRORS}"
+    echo "[LogNest] ============================================"
+    exit 0
