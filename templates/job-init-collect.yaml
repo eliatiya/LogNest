@@ -10,7 +10,7 @@ metadata:
     # Run once immediately after helm install completes
     "helm.sh/hook": post-install
     "helm.sh/hook-weight": "0"
-    # Clean up the job pod after it finishes (keeps the cluster tidy)
+    # Clean up the job pod after it finishes successfully
     "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
 spec:
   backoffLimit: 0
@@ -37,6 +37,22 @@ spec:
       affinity:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      initContainers:
+        # Wait until the PVC is bound before the collector tries to mount it
+        - name: wait-for-pvc
+          image: {{ include "lognest.image" (dict "registry" .Values.global.imageRegistry "repository" .Values.collector.image.repository "tag" .Values.collector.image.tag) }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "[LogNest] Waiting for PVC {{ .Values.storage.pvc.name }} to be bound..."
+              until kubectl get pvc {{ .Values.storage.pvc.name }} \
+                -n {{ include "lognest.namespace" . }} \
+                -o jsonpath='{.status.phase}' 2>/dev/null | grep -q "Bound"; do
+                echo "[LogNest] PVC not bound yet, retrying in 5s..."
+                sleep 5
+              done
+              echo "[LogNest] PVC is bound — proceeding"
       containers:
         - name: init-collector
           image: {{ include "lognest.image" (dict "registry" .Values.global.imageRegistry "repository" .Values.collector.image.repository "tag" .Values.collector.image.tag) }}

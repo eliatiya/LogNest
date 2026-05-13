@@ -5,6 +5,12 @@ metadata:
   namespace: {{ include "lognest.namespace" . }}
   labels:
     {{- include "lognest.labels" . | nindent 4 }}
+  annotations:
+    # Create the PVC first, before any other hook (weight -10 runs before weight 0)
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-10"
+    # Never delete the PVC on uninstall — data must be preserved
+    "helm.sh/hook-delete-policy": before-hook-creation
 spec:
   accessModes:
     - {{ .Values.storage.pvc.accessMode }}
