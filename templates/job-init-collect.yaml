@@ -46,13 +46,25 @@ spec:
             - -c
             - |
               echo "[LogNest] Waiting for PVC {{ .Values.storage.pvc.name }} to be bound..."
+              ATTEMPTS=0
+              MAX_ATTEMPTS=60
               until kubectl get pvc {{ .Values.storage.pvc.name }} \
                 -n {{ include "lognest.namespace" . }} \
                 -o jsonpath='{.status.phase}' 2>/dev/null | grep -q "Bound"; do
-                echo "[LogNest] PVC not bound yet, retrying in 5s..."
+                ATTEMPTS=$((ATTEMPTS + 1))
+                if [ "${ATTEMPTS}" -ge "${MAX_ATTEMPTS}" ]; then
+                  echo "[LogNest] ERROR: PVC not bound after $((MAX_ATTEMPTS * 5))s"
+                  echo "[LogNest] PVC status:"
+                  kubectl describe pvc {{ .Values.storage.pvc.name }} -n {{ include "lognest.namespace" . }} 2>/dev/null || true
+                  exit 1
+                fi
+                PHASE=$(kubectl get pvc {{ .Values.storage.pvc.name }} \
+                  -n {{ include "lognest.namespace" . }} \
+                  -o jsonpath='{.status.phase}' 2>/dev/null || echo "Unknown")
+                echo "[LogNest] PVC phase=${PHASE} (attempt ${ATTEMPTS}/${MAX_ATTEMPTS}), retrying in 5s..."
                 sleep 5
               done
-              echo "[LogNest] PVC is bound — proceeding"
+              echo "[LogNest] PVC is Bound — proceeding"
       containers:
         - name: init-collector
           image: {{ include "lognest.image" (dict "registry" .Values.global.imageRegistry "repository" .Values.collector.image.repository "tag" .Values.collector.image.tag) }}
