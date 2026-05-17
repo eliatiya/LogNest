@@ -13,3 +13,7 @@ rules:
   - apiGroups: [""]
     resources: ["pods", "pods/log", "namespaces"]
     verbs: ["get", "list"]
+  # Read PVCs in own namespace (needed by wait-for-pvc init container)
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
