@@ -70,7 +70,7 @@ storage:
 
   pvc:
     name: lognest-data
-    size: 100Gi
+    size: 150Gi
     accessMode: ReadWriteMany
 
   # Sub-directory names inside the PVC
