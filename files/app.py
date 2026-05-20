@@ -2,10 +2,10 @@
 """
 LogNest Web UI — Production Ready
 """
-import os, re, html as _html
+import os, re, io, zipfile, html as _html
 from pathlib import Path
 from datetime import datetime
-from flask import Flask, render_template_string, send_file, request, abort, jsonify
+from flask import Flask, render_template_string, send_file, request, abort, jsonify, Response
 
 app = Flask(__name__)
 
@@ -269,6 +269,33 @@ td.mono{{font-family:monospace;font-size:.8rem;color:#a0aec0}}
 /* ── Size pill ── */
 .size{{font-size:.75rem;color:var(--text-dim);font-family:monospace;background:var(--surface2);padding:2px 7px;border-radius:4px}}
 
+/* ── Checkbox ── */
+.cb-wrap{{display:flex;align-items:center;justify-content:center}}
+input[type=checkbox]{{
+  width:16px;height:16px;cursor:pointer;accent-color:var(--accent);
+  border-radius:3px;flex-shrink:0;
+}}
+tr.selected td{{background:rgba(79,142,247,.07)!important}}
+tr.selected td:first-child{{border-left:2px solid var(--accent)}}
+
+/* ── Selection bar ── */
+#sel-bar{{
+  position:fixed;bottom:28px;left:50%;transform:translateX(-50%) translateY(100px);
+  background:var(--surface2);border:1px solid var(--accent);
+  border-radius:40px;padding:10px 20px;
+  display:flex;align-items:center;gap:16px;
+  box-shadow:0 8px 32px rgba(0,0,0,.5),0 0 0 1px rgba(79,142,247,.2);
+  transition:transform .25s cubic-bezier(.34,1.56,.64,1),opacity .2s;
+  opacity:0;z-index:200;white-space:nowrap;
+}}
+#sel-bar.visible{{transform:translateX(-50%) translateY(0);opacity:1}}
+#sel-bar .sel-count{{
+  font-size:.85rem;font-weight:600;color:var(--accent);
+  background:var(--accent-dim);padding:3px 10px;border-radius:20px;
+}}
+#sel-bar .sel-label{{font-size:.85rem;color:var(--text-dim)}}
+#sel-bar .sep{{width:1px;height:20px;background:var(--border2)}}
+
 /* ── Toast ── */
 #toast{{
   position:fixed;bottom:24px;right:24px;
@@ -327,14 +354,108 @@ td.mono{{font-family:monospace;font-size:.8rem;color:#a0aec0}}
 </div>
 
 <div id="toast"></div>
+
+<!-- ── Multi-select floating bar ── -->
+<div id="sel-bar">
+  <span class="sel-count" id="sel-count">0</span>
+  <span class="sel-label">files selected</span>
+  <span class="sep"></span>
+  <button class="btn btn-sm" onclick="downloadSelected()">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+    Download Selected
+  </button>
+  <button class="btn btn-ghost btn-sm" onclick="clearSelection()">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    Clear
+  </button>
+</div>
+
 <script>
 function toast(msg, type){{
   var t=document.getElementById('toast');
   t.textContent=msg; t.className='show '+(type||'');
   setTimeout(function(){{t.className='';}},3000);
 }}
-function copyText(txt){{
-  navigator.clipboard.writeText(txt).then(function(){{toast('Copied to clipboard','success');}});
+
+/* ── Multi-select logic ── */
+var selectedFiles = {{}};
+
+function updateBar(){{
+  var count = Object.keys(selectedFiles).length;
+  var bar   = document.getElementById('sel-bar');
+  var cnt   = document.getElementById('sel-count');
+  cnt.textContent = count;
+  if(count > 0){{ bar.classList.add('visible'); }}
+  else {{ bar.classList.remove('visible'); }}
+}}
+
+function toggleRow(cb){{
+  var row = cb.closest('tr');
+  var run = cb.dataset.run;
+  var file = cb.dataset.file;
+  var key = run + '|' + file;
+  if(cb.checked){{
+    selectedFiles[key] = {{run: run, file: file}};
+    row.classList.add('selected');
+  }} else {{
+    delete selectedFiles[key];
+    row.classList.remove('selected');
+  }}
+  updateBar();
+  // update header checkbox state
+  var allCbs = document.querySelectorAll('.file-cb');
+  var headerCb = document.getElementById('cb-all');
+  if(headerCb){{
+    var checked = Array.from(allCbs).filter(function(c){{return c.checked;}}).length;
+    headerCb.indeterminate = checked > 0 && checked < allCbs.length;
+    headerCb.checked = checked === allCbs.length;
+  }}
+}}
+
+function toggleAll(cb){{
+  var allCbs = document.querySelectorAll('.file-cb');
+  allCbs.forEach(function(c){{
+    c.checked = cb.checked;
+    toggleRow(c);
+  }});
+}}
+
+function clearSelection(){{
+  selectedFiles = {{}};
+  document.querySelectorAll('.file-cb').forEach(function(c){{
+    c.checked = false;
+    c.closest('tr').classList.remove('selected');
+  }});
+  var hcb = document.getElementById('cb-all');
+  if(hcb){{ hcb.checked = false; hcb.indeterminate = false; }}
+  updateBar();
+}}
+
+function downloadSelected(){{
+  var keys = Object.keys(selectedFiles);
+  if(keys.length === 0) return;
+  if(keys.length === 1){{
+    var f = selectedFiles[keys[0]];
+    window.location = '/download/log/' + encodeURIComponent(f.run) + '/' + encodeURIComponent(f.file);
+    return;
+  }}
+  // Build form and POST to multi-download endpoint
+  var form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/download/multi';
+  keys.forEach(function(k){{
+    var f = selectedFiles[k];
+    var i1 = document.createElement('input');
+    i1.type='hidden'; i1.name='run[]'; i1.value=f.run;
+    var i2 = document.createElement('input');
+    i2.type='hidden'; i2.name='file[]'; i2.value=f.file;
+    form.appendChild(i1);
+    form.appendChild(i2);
+  }});
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
+  toast('Preparing ' + keys.length + ' files...', 'success');
 }}
 </script>
 </body></html>"""
@@ -580,7 +701,8 @@ def files():
             </div>
             <div class="field">
               <label>Search filename</label>
-              <input class="input" name="q" placeholder="e.g. production, coredns..." value="{_html.escape(search)}" type="text"/>
+              <input class="input" name="q" placeholder="e.g. production, coredns..."
+                     value="{_html.escape(search)}" type="text"/>
             </div>
             <div class="field" style="justify-content:flex-end;min-width:auto">
               <label>&nbsp;</label>
@@ -595,7 +717,6 @@ def files():
     if sel_run:
         class FileInfo:
             def __init__(self, path):
-                self.path = path
                 self.name = path.name
                 self.size = _human_size(path.stat().st_size)
                 parts = path.stem.split("__")
@@ -610,44 +731,128 @@ def files():
         if all_files:
             rows = ""
             for f in all_files:
+                r = _html.escape(sel_run)
+                fn = _html.escape(f.name)
                 rows += f"""<tr>
+                  <td class="cb-wrap">
+                    <input type="checkbox" class="file-cb"
+                           data-run="{r}" data-file="{fn}"
+                           onchange="toggleRow(this)"/>
+                  </td>
                   <td><span class="badge badge-ns">{_html.escape(f.ns)}</span></td>
                   <td class="mono">{_html.escape(f.pod)}</td>
                   <td class="mono">{_html.escape(f.container)}</td>
                   <td><span class="size">{f.size}</span></td>
-                  <td style="display:flex;gap:6px">
-                    <a class="btn btn-sm" href="/download/log/{_html.escape(sel_run)}/{_html.escape(f.name)}">
-                      <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-                      Download
-                    </a>
-                    <a class="btn btn-ghost btn-sm" href="/?run={_html.escape(sel_run)}&pod={_html.escape(f.name)}">View</a>
+                  <td>
+                    <div style="display:flex;gap:6px">
+                      <a class="btn btn-sm"
+                         href="/download/log/{r}/{fn}">
+                        <svg width="11" height="11" viewBox="0 0 24 24" fill="none"
+                             stroke="currentColor" stroke-width="2.5">
+                          <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                          <polyline points="7 10 12 15 17 10"/>
+                          <line x1="12" y1="15" x2="12" y2="3"/>
+                        </svg>
+                        Download
+                      </a>
+                      <a class="btn btn-ghost btn-sm"
+                         href="/?run={r}&pod={fn}">View</a>
+                    </div>
                   </td>
                 </tr>"""
+
             table_block = f"""
             <div class="card">
               <div class="card-header">
                 <span class="card-title">
-                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2">
+                    <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                  </svg>
                   {_html.escape(sel_run)}
                 </span>
-                <span style="font-size:.75rem;color:var(--text-dim)">{len(all_files)} file{"s" if len(all_files)!=1 else ""}</span>
+                <div style="display:flex;align-items:center;gap:12px">
+                  <span style="font-size:.75rem;color:var(--text-dim)">
+                    {len(all_files)} file{"s" if len(all_files)!=1 else ""}
+                  </span>
+                  <button class="btn btn-ghost btn-sm" type="button"
+                          onclick="selectAll()">Select All</button>
+                </div>
               </div>
               <div class="table-wrap">
                 <table>
-                  <thead><tr><th>Namespace</th><th>Pod</th><th>Container</th><th>Size</th><th>Actions</th></tr></thead>
+                  <thead>
+                    <tr>
+                      <th style="width:40px">
+                        <input type="checkbox" id="cb-all"
+                               onchange="toggleAll(this)"
+                               title="Select all"/>
+                      </th>
+                      <th>Namespace</th>
+                      <th>Pod</th>
+                      <th>Container</th>
+                      <th>Size</th>
+                      <th>Actions</th>
+                    </tr>
+                  </thead>
                   <tbody>{rows}</tbody>
                 </table>
               </div>
-            </div>"""
+            </div>
+            <script>
+            function selectAll(){{
+              var cb = document.getElementById('cb-all');
+              cb.checked = true;
+              toggleAll(cb);
+            }}
+            </script>"""
         else:
             table_block = '<div class="empty-state"><p>No files match your search.</p></div>'
     else:
         table_block = """<div class="empty-state">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1.5">
+            <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/>
+            <polyline points="14 2 14 8 20 8"/>
+          </svg>
           <p>Select a run to browse individual log files</p>
         </div>"""
 
     return render_page("files", controls + table_block, "Files")
+
+
+# ------------------------------------------------------------------ multi-download
+@app.route("/download/multi", methods=["POST"])
+def download_multi():
+    runs  = request.form.getlist("run[]")
+    files = request.form.getlist("file[]")
+
+    if not runs or not files or len(runs) != len(files):
+        abort(400)
+
+    # Build zip in memory
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for run, filename in zip(runs, files):
+            # Sanitize — no path traversal
+            run      = Path(run).name
+            filename = Path(filename).name
+            path     = LOGS_DIR / run / filename
+            if path.exists() and path.is_file():
+                # Store as run/filename inside the zip
+                zf.write(path, arcname=f"{run}/{filename}")
+
+    buf.seek(0)
+    ts = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return Response(
+        buf.getvalue(),
+        mimetype="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="lognest-selection-{ts}.zip"',
+            "Content-Length": str(buf.getbuffer().nbytes),
+        }
+    )
 
 
 # ------------------------------------------------------------------ API
