@@ -32,6 +32,39 @@ data:
     echo "[LogNest] ============================================"
 
     # --------------------------------------------------------
+    # Wait for PVC to be bound (needed when running as post-install Job)
+    # --------------------------------------------------------
+    PVC_NAME="{{ .Values.storage.pvc.name }}"
+    PVC_NS="{{ include "lognest.namespace" . }}"
+    echo "[LogNest] Waiting for PVC ${PVC_NAME} to be Bound..."
+    ATTEMPTS=0
+    while true; do
+      PHASE=$(kubectl get pvc "${PVC_NAME}" -n "${PVC_NS}" \
+        -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
+      if [ "${PHASE}" = "Bound" ]; then
+        echo "[LogNest] PVC is Bound — continuing"
+        break
+      fi
+      ATTEMPTS=$((ATTEMPTS + 1))
+      if [ "${ATTEMPTS}" -ge 60 ]; then
+        echo "[LogNest] ERROR: PVC not bound after 5 minutes"
+        exit 1
+      fi
+      echo "[LogNest] PVC phase='${PHASE}' — waiting 5s (${ATTEMPTS}/60)..."
+      sleep 5
+    done
+    if ! kubectl version --client > /dev/null 2>&1; then
+      echo "[LogNest] ERROR: kubectl not found or not working"
+      exit 1
+    fi
+    echo "[LogNest] kubectl OK: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+
+    # --------------------------------------------------------
+    # Create directories
+    # --------------------------------------------------------
+    mkdir -p "${RUN_DIR}" || { echo "[LogNest] ERROR: cannot create ${RUN_DIR}"; exit 1; }
+    mkdir -p "${ZIP_DIR}"  || { echo "[LogNest] ERROR: cannot create ${ZIP_DIR}";  exit 1; }
+    # --------------------------------------------------------
     # Verify kubectl is available
     # --------------------------------------------------------
     if ! kubectl version --client > /dev/null 2>&1; then

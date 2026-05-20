@@ -6,10 +6,6 @@ metadata:
   labels:
     {{- include "lognest.labels" . | nindent 4 }}
   annotations:
-    "helm.sh/hook": pre-install,pre-upgrade
-    "helm.sh/hook-weight": "-10"
-    # Delete PVC on uninstall — PV reclaimPolicy:Retain keeps the NFS folder intact
-    "helm.sh/hook-delete-policy": hook-failed,before-hook-creation
     # Tell the nfs-subdir provisioner: never delete or archive the NFS folder
     # when the PV is released — data stays on disk forever
     "nfs.io/storage-path": {{ .Values.storage.pvc.nfsSubPath | quote }}
