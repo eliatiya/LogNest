@@ -11,6 +11,8 @@ metadata:
     # NEVER delete the PVC on uninstall — data must be preserved
     "helm.sh/hook-delete-policy": before-hook-creation
     "lognest/data-note": "This PVC holds all collected logs. Do not delete manually."
+    # Controls the exact NFS subdirectory name via nfs-storage StorageClass pathPattern
+    nfs.io/storage-path: {{ .Values.storage.pvc.nfsSubPath | quote }}
 spec:
   accessModes:
     - {{ .Values.storage.pvc.accessMode }}
@@ -18,5 +20,3 @@ spec:
   resources:
     requests:
       storage: {{ .Values.storage.pvc.size }}
-  # Bind directly to our static PV — guarantees same NFS path every time
-  volumeName: {{ .Values.storage.pv.name }}

@@ -68,20 +68,17 @@ storage:
   # NFS exported path
   nfsPath: "/exports/lognest"
 
-  # StorageClass to use for the PVC.
-  # Uses the nfs-client StorageClass that Rancher/RKE2 provides out of the box.
-  storageClassName: nfs-client
-
-  # Static PV — gives a fixed, predictable NFS folder name
-  pv:
-    name: pv-lognest
-    # Folder created under nfsPath — exactly this name, no random suffix
-    subPath: "lognest-data-pvc"
+  # StorageClass created by the cluster admin using nfs-subdir-external-provisioner.
+  # Uses pathPattern annotation to control the exact NFS folder name.
+  storageClassName: nfs-storage
 
   pvc:
     name: pvc-lognest
     size: 150Gi
     accessMode: ReadWriteMany
+    # Exact subdirectory name created on the NFS server under nfsPath.
+    # Results in: /exports/lognest-data-pvc
+    nfsSubPath: "lognest-data-pvc"
 
   # Sub-directory names inside the PVC
   logsDir: "logs"
