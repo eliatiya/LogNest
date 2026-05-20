@@ -8,11 +8,12 @@ metadata:
   annotations:
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-10"
-    # NEVER delete the PVC on uninstall — data must be preserved
-    "helm.sh/hook-delete-policy": before-hook-creation
-    "lognest/data-note": "This PVC holds all collected logs. Do not delete manually."
-    # Controls the exact NFS subdirectory name via nfs-storage StorageClass pathPattern
-    nfs.io/storage-path: {{ .Values.storage.pvc.nfsSubPath | quote }}
+    # Delete PVC on uninstall — PV reclaimPolicy:Retain keeps the NFS folder intact
+    "helm.sh/hook-delete-policy": hook-failed,before-hook-creation
+    # Tell the nfs-subdir provisioner: never delete or archive the NFS folder
+    # when the PV is released — data stays on disk forever
+    "nfs.io/storage-path": {{ .Values.storage.pvc.nfsSubPath | quote }}
+    "archiveOnDelete": "false"
 spec:
   accessModes:
     - {{ .Values.storage.pvc.accessMode }}
