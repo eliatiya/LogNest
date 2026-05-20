@@ -73,7 +73,7 @@ storage:
   storageClassName: nfs-client
 
   pvc:
-    name: lognest-data
+    name: pvc-lognest
     size: 150Gi
     accessMode: ReadWriteMany
     # storageClassName is used on first install to provision the PV.
