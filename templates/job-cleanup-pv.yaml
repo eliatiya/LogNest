@@ -1,0 +1,79 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Values.serviceAccount.name }}-cleanup
+  namespace: {{ include "lognest.namespace" . }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-5"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed,before-hook-creation
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "lognest.fullname" . }}-pv-cleanup
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-4"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed,before-hook-creation
+rules:
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "lognest.fullname" . }}-pv-cleanup
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "-3"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed,before-hook-creation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "lognest.fullname" . }}-pv-cleanup
+subjects:
+  - kind: ServiceAccount
+    name: {{ .Values.serviceAccount.name }}-cleanup
+    namespace: {{ include "lognest.namespace" . }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "lognest.fullname" . }}-pv-cleanup
+  namespace: {{ include "lognest.namespace" . }}
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": hook-succeeded,hook-failed,before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 120
+  template:
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}-cleanup
+      restartPolicy: Never
+      containers:
+        - name: pv-cleanup
+          image: {{ include "lognest.image" (dict "registry" .Values.global.imageRegistry "repository" .Values.collector.image.repository "tag" .Values.collector.image.tag) }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              echo "[LogNest] Looking for PV bound to PVC {{ .Values.storage.pvc.name }}..."
+              PV_NAME=$(kubectl get pvc {{ .Values.storage.pvc.name }} \
+                -n {{ include "lognest.namespace" . }} \
+                -o jsonpath='{.spec.volumeName}' 2>/dev/null || echo "")
+
+              if [ -z "${PV_NAME}" ]; then
+                echo "[LogNest] No PV found for PVC — nothing to clean up"
+                exit 0
+              fi
+
+              echo "[LogNest] Deleting PV: ${PV_NAME}"
+              kubectl delete pv "${PV_NAME}" --ignore-not-found
+              echo "[LogNest] PV deleted — NFS folder is preserved on disk"
