@@ -72,15 +72,16 @@ storage:
   # Uses the nfs-client StorageClass that Rancher/RKE2 provides out of the box.
   storageClassName: nfs-client
 
+  # Static PV — gives a fixed, predictable NFS folder name
+  pv:
+    name: pv-lognest
+    # Folder created under nfsPath — exactly this name, no random suffix
+    subPath: "lognest-data-pvc"
+
   pvc:
     name: pvc-lognest
     size: 150Gi
     accessMode: ReadWriteMany
-    # storageClassName is used on first install to provision the PV.
-    # After first install, the PV name is printed in the job logs.
-    # Set volumeName to that PV name to ensure rebind after uninstall/reinstall.
-    # Leave empty on first install, then fill in after.
-    volumeName: ""
 
   # Sub-directory names inside the PVC
   logsDir: "logs"

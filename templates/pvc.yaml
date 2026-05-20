@@ -6,12 +6,10 @@ metadata:
   labels:
     {{- include "lognest.labels" . | nindent 4 }}
   annotations:
-    # Create PVC before any other hook
     "helm.sh/hook": pre-install,pre-upgrade
     "helm.sh/hook-weight": "-10"
     # NEVER delete the PVC on uninstall — data must be preserved
     "helm.sh/hook-delete-policy": before-hook-creation
-    # Remind operators that data lives here
     "lognest/data-note": "This PVC holds all collected logs. Do not delete manually."
 spec:
   accessModes:
@@ -20,7 +18,5 @@ spec:
   resources:
     requests:
       storage: {{ .Values.storage.pvc.size }}
-  {{- if .Values.storage.pvc.volumeName }}
-  # Bind to a specific PV by name — ensures data persists across uninstall/reinstall
-  volumeName: {{ .Values.storage.pvc.volumeName }}
-  {{- end }}
+  # Bind directly to our static PV — guarantees same NFS path every time
+  volumeName: {{ .Values.storage.pv.name }}

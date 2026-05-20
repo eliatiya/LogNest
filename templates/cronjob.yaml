@@ -19,7 +19,7 @@ spec:
     spec:
       # 0 = no retries; the script handles its own errors and always exits 0
       backoffLimit: 0
-      activeDeadlineSeconds: 3600
+      activeDeadlineSeconds: 7200
       template:
         metadata:
           labels:
