@@ -6,10 +6,6 @@ metadata:
   labels:
     {{- include "lognest.labels" . | nindent 4 }}
     lognest/component: collector
-  annotations:
-    "helm.sh/hook": post-install
-    "helm.sh/hook-weight": "0"
-    "helm.sh/hook-delete-policy": hook-succeeded,before-hook-creation
 spec:
   backoffLimit: 0
   activeDeadlineSeconds: 7200
