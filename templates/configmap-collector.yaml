@@ -18,6 +18,7 @@ data:
     LOGS_DIR="${LOGS_DIR:-/data/{{ .Values.storage.logsDir }}}"
     ZIP_DIR="${ZIP_DIR:-/data/{{ .Values.storage.logsZipDir }}}"
     RETENTION_MONTHS="{{ .Values.collector.retentionMonths }}"
+    CAPACITY_THRESHOLD="{{ .Values.collector.capacityThresholdPercent }}"
     TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
     RUN_DIR="${LOGS_DIR}/${TIMESTAMP}"
     ERRORS=0
@@ -26,6 +27,8 @@ data:
     echo "[LogNest] Starting log collection at ${TIMESTAMP}"
     echo "[LogNest] LOGS_DIR=${LOGS_DIR}"
     echo "[LogNest] ZIP_DIR=${ZIP_DIR}"
+    echo "[LogNest] Retention: ${RETENTION_MONTHS} month(s)"
+    echo "[LogNest] Capacity threshold: ${CAPACITY_THRESHOLD}%"
     echo "[LogNest] ============================================"
 
     # --------------------------------------------------------
@@ -98,22 +101,46 @@ data:
       if tar -czf "${ZIP_FILE}" -C "${LOGS_DIR}" "${TIMESTAMP}" 2>/dev/null; then
         echo "[LogNest] Archive created: ${ZIP_FILE}"
       else
-        echo "[LogNest] WARN: tar failed — check if tar is available in this image"
-        # Fallback: try to find tar elsewhere
-        TAR_BIN=$(which tar 2>/dev/null || find /usr /bin /sbin -name tar 2>/dev/null | head -1)
-        if [ -n "${TAR_BIN}" ]; then
-          "${TAR_BIN}" -czf "${ZIP_FILE}" -C "${LOGS_DIR}" "${TIMESTAMP}" 2>/dev/null && \
-            echo "[LogNest] Archive created via ${TAR_BIN}: ${ZIP_FILE}"
-        fi
+        echo "[LogNest] WARN: tar failed"
       fi
     else
       echo "[LogNest] WARN: no log files collected — skipping compression"
     fi
 
     # --------------------------------------------------------
-    # Retention cleanup
+    # Capacity-based cleanup (runs BEFORE time-based retention)
+    # Delete oldest runs first until disk usage is below threshold
     # --------------------------------------------------------
-    # Use awk for date arithmetic — works in busybox and alpine
+    if [ "${CAPACITY_THRESHOLD}" -gt 0 ] 2>/dev/null; then
+      DATA_DIR="/data"
+      echo "[LogNest] Checking disk capacity (threshold: ${CAPACITY_THRESHOLD}%)"
+
+      USED_PCT=$(df "${DATA_DIR}" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')
+      echo "[LogNest] Current disk usage: ${USED_PCT}%"
+
+      while [ "${USED_PCT:-0}" -ge "${CAPACITY_THRESHOLD}" ]; do
+        # Find the oldest run directory (skip the one we just created)
+        OLDEST_RUN=$(ls -1 "${LOGS_DIR}" 2>/dev/null | grep -v "^${TIMESTAMP}$" | sort | head -1)
+        OLDEST_ZIP="${ZIP_DIR}/lognest_${OLDEST_RUN}.tar.gz"
+
+        if [ -z "${OLDEST_RUN}" ]; then
+          echo "[LogNest] WARN: disk still above threshold but no old runs to delete"
+          break
+        fi
+
+        echo "[LogNest] Capacity cleanup: deleting oldest run ${OLDEST_RUN} (disk at ${USED_PCT}%)"
+        rm -rf "${LOGS_DIR:?}/${OLDEST_RUN}"
+        [ -f "${OLDEST_ZIP}" ] && rm -f "${OLDEST_ZIP}" && \
+          echo "[LogNest] Capacity cleanup: deleted archive ${OLDEST_ZIP}"
+
+        USED_PCT=$(df "${DATA_DIR}" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')
+        echo "[LogNest] Disk usage after cleanup: ${USED_PCT}%"
+      done
+    fi
+
+    # --------------------------------------------------------
+    # Time-based retention: delete runs older than RETENTION_MONTHS
+    # --------------------------------------------------------
     CUTOFF_EPOCH=$(awk -v months="${RETENTION_MONTHS}" \
       'BEGIN { print systime() - (months * 30 * 86400) }' 2>/dev/null) || true
 
@@ -123,14 +150,13 @@ data:
       for DIR in "${LOGS_DIR}"/*/; do
         [ -d "${DIR}" ] || continue
         DIRNAME=$(basename "${DIR}")
-        # Convert dirname timestamp to epoch for comparison
         DIR_EPOCH=$(echo "${DIRNAME}" | awk -F'[_-]' '{
           cmd = "date -d \""$1"-"$2"-"$3" "$4":"$5":"$6"\" +%s 2>/dev/null"
           cmd | getline ep; close(cmd); print ep+0
         }' 2>/dev/null) || DIR_EPOCH=0
 
         if [ "${DIR_EPOCH}" -gt 0 ] && [ "${DIR_EPOCH}" -lt "${CUTOFF_EPOCH}" ]; then
-          echo "[LogNest] Deleting old run: ${DIRNAME}"
+          echo "[LogNest] Retention: deleting old run ${DIRNAME}"
           rm -rf "${DIR}"
         fi
       done
@@ -144,13 +170,15 @@ data:
         }' 2>/dev/null) || ZIP_EPOCH=0
 
         if [ "${ZIP_EPOCH}" -gt 0 ] && [ "${ZIP_EPOCH}" -lt "${CUTOFF_EPOCH}" ]; then
-          echo "[LogNest] Deleting old zip: ${ZIPF}"
+          echo "[LogNest] Retention: deleting old zip ${ZIPF}"
           rm -f "${ZIPF}"
         fi
       done
     fi
 
     echo "[LogNest] ============================================"
-    echo "[LogNest] Done. Files collected: ${FILE_COUNT}, Warnings: ${ERRORS}"
+    echo "[LogNest] Done. Files: ${FILE_COUNT}, Warnings: ${ERRORS}"
+    FINAL_PCT=$(df "/data" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')
+    echo "[LogNest] Final disk usage: ${FINAL_PCT}%"
     echo "[LogNest] ============================================"
     exit 0

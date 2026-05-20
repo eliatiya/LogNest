@@ -37,6 +37,10 @@ collector:
   # How many months of logs/zips to retain before deletion
   retentionMonths: 1
 
+  # If disk usage exceeds this % of PVC capacity, delete oldest runs
+  # until usage drops below the threshold. Set to 0 to disable.
+  capacityThresholdPercent: 80
+
   image:
     repository: alpine/k8s
     tag: "1.30.2"
@@ -72,6 +76,11 @@ storage:
     name: lognest-data
     size: 150Gi
     accessMode: ReadWriteMany
+    # storageClassName is used on first install to provision the PV.
+    # After first install, the PV name is printed in the job logs.
+    # Set volumeName to that PV name to ensure rebind after uninstall/reinstall.
+    # Leave empty on first install, then fill in after.
+    volumeName: ""
 
   # Sub-directory names inside the PVC
   logsDir: "logs"

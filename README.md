@@ -250,6 +250,29 @@ collector:
   retentionMonths: 3
 ```
 
+### Capacity-based cleanup
+
+If disk usage exceeds `collector.capacityThresholdPercent` (default **80%**), the oldest runs are deleted one by one until usage drops below the threshold — before time-based retention runs. This ensures the newest logs are always preserved even during log bursts.
+
+### Data persistence across uninstall/reinstall
+
+The PVC is **never deleted** by Helm uninstall. After first install, pin the PV name in `values.yaml` so reinstalls always bind to the same NFS directory:
+
+```bash
+# Get the PV name after first install
+kubectl get pvc lognest-data -n lognest -o jsonpath='{.spec.volumeName}'
+# e.g. pvc-012e83b5-ecff-4e19-b404-e5353854aaf0
+```
+
+```yaml
+# values.yaml
+storage:
+  pvc:
+    volumeName: "pvc-012e83b5-ecff-4e19-b404-e5353854aaf0"
+```
+
+Now `helm uninstall` + `helm install` will always reattach to the same NFS directory and all existing logs are preserved.
+
 ---
 
 ## 🛠️ Useful Commands
