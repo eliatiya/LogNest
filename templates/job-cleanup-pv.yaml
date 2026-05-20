@@ -75,5 +75,5 @@ spec:
               fi
 
               echo "[LogNest] Deleting PV: ${PV_NAME}"
-              kubectl delete pv "${PV_NAME}" --ignore-not-found
-              echo "[LogNest] PV deleted — NFS folder is preserved on disk"
+              kubectl delete pv "${PV_NAME}" --ignore-not-found --wait=false
+              echo "[LogNest] PV deletion issued — NFS folder is preserved on disk"
