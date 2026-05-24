@@ -1121,34 +1121,36 @@ def collect_page():
 @app.route("/collect/trigger", methods=["POST"])
 def collect_trigger():
     note     = request.form.get("note", "").strip()[:200]
-    ts       = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    ts       = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     job_name = f"lognest-ondemand-{ts}"
 
     try:
         from kubernetes import client as k8s_client, config as k8s_config
-        from kubernetes.client.rest import ApiException
 
-        # Load in-cluster config (works inside a pod)
         k8s_config.load_incluster_config()
         batch_v1 = k8s_client.BatchV1Api()
 
-        # Get the source CronJob to copy its job template
+        # Get the source CronJob to copy its pod template
         cron = batch_v1.read_namespaced_cron_job(
             name="lognest-collector-1",
             namespace=K8S_NAMESPACE
         )
-        job_template = cron.spec.job_template
+        pod_template = cron.spec.job_template.spec.template
 
-        # Build the Job object
+        # Build a clean Job — only set what's needed
         job = k8s_client.V1Job(
             api_version="batch/v1",
             kind="Job",
             metadata=k8s_client.V1ObjectMeta(
                 name=job_name,
                 namespace=K8S_NAMESPACE,
-                labels={"lognest/trigger": "ondemand"}
+                labels={"lognest/trigger": "ondemand", "lognest/component": "collector"}
             ),
-            spec=job_template.spec
+            spec=k8s_client.V1JobSpec(
+                backoff_limit=0,
+                active_deadline_seconds=7200,
+                template=pod_template
+            )
         )
 
         batch_v1.create_namespaced_job(namespace=K8S_NAMESPACE, body=job)
@@ -1157,7 +1159,7 @@ def collect_trigger():
 
     except Exception as e:
         status   = "failed"
-        note_out = str(e)[:300]
+        note_out = str(e)[:400]
 
     save_ondemand_run({
         "triggered": ts,
