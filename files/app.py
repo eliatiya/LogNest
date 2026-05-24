@@ -2,7 +2,7 @@
 """
 LogNest Web UI — Production Ready
 """
-import os, re, io, zipfile, html as _html
+import os, re, io, zipfile, html as _html, json as _json
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, render_template_string, send_file, request, abort, jsonify, Response
@@ -987,10 +987,8 @@ def download_log(run, filename):
 
 
 # ------------------------------------------------------------------ on-demand collect
-import subprocess, json as _json
-
-ONDEMAND_LOG = Path(os.environ.get("LOGS_DIR", "/data/logs")) / ".ondemand_runs.json"
-K8S_NAMESPACE = os.environ.get("POD_NAMESPACE", "lognest")
+K8S_NAMESPACE   = os.environ.get("POD_NAMESPACE", "lognest")
+ONDEMAND_LOG    = Path(os.environ.get("LOGS_DIR", "/data/logs")) / ".ondemand_runs.json"
 COLLECTOR_IMAGE = os.environ.get("COLLECTOR_IMAGE", "alpine/k8s:1.30.2")
 COLLECTOR_SA    = os.environ.get("COLLECTOR_SA", "lognest")
 COLLECTOR_CM    = os.environ.get("COLLECTOR_CM", "lognest-collector-script")
@@ -1122,37 +1120,53 @@ def collect_page():
 
 @app.route("/collect/trigger", methods=["POST"])
 def collect_trigger():
-    note = request.form.get("note", "").strip()[:200]
-    ts   = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    note     = request.form.get("note", "").strip()[:200]
+    ts       = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     job_name = f"lognest-ondemand-{ts}"
 
-    # Build kubectl create job command
-    cmd = [
-        "kubectl", "create", "job", job_name,
-        "--from=cronjob/lognest-collector-1",
-        "-n", K8S_NAMESPACE
-    ]
-
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-        if result.returncode == 0:
-            status = "triggered"
-            note_out = note or "Manual trigger from UI"
-        else:
-            status = "failed"
-            note_out = result.stderr.strip()[:300] or note
+        from kubernetes import client as k8s_client, config as k8s_config
+        from kubernetes.client.rest import ApiException
+
+        # Load in-cluster config (works inside a pod)
+        k8s_config.load_incluster_config()
+        batch_v1 = k8s_client.BatchV1Api()
+
+        # Get the source CronJob to copy its job template
+        cron = batch_v1.read_namespaced_cron_job(
+            name="lognest-collector-1",
+            namespace=K8S_NAMESPACE
+        )
+        job_template = cron.spec.job_template
+
+        # Build the Job object
+        job = k8s_client.V1Job(
+            api_version="batch/v1",
+            kind="Job",
+            metadata=k8s_client.V1ObjectMeta(
+                name=job_name,
+                namespace=K8S_NAMESPACE,
+                labels={"lognest/trigger": "ondemand"}
+            ),
+            spec=job_template.spec
+        )
+
+        batch_v1.create_namespaced_job(namespace=K8S_NAMESPACE, body=job)
+        status   = "triggered"
+        note_out = note or "Manual trigger from UI"
+
     except Exception as e:
-        status = "failed"
+        status   = "failed"
         note_out = str(e)[:300]
 
     save_ondemand_run({
         "triggered": ts,
-        "status": status,
-        "job": job_name,
-        "note": note_out
+        "status":    status,
+        "job":       job_name,
+        "note":      note_out
     })
 
-    from flask import redirect, url_for
+    from flask import redirect
     return redirect("/collect")
 
 

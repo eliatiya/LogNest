@@ -41,7 +41,7 @@ spec:
             - |
               set -e
               cp /configmap/app.py /app/app.py
-              pip install --quiet --no-cache-dir flask==3.0.3 gunicorn==22.0.0
+              pip install --quiet --no-cache-dir flask==3.0.3 gunicorn==22.0.0 kubernetes==29.0.0
               cd /app && exec python -m gunicorn --workers 2 --bind 0.0.0.0:8080 --timeout 120 app:app
           ports:
             - name: http
