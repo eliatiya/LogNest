@@ -23,6 +23,9 @@ rules:
   - apiGroups: [""]
     resources: ["persistentvolumeclaims"]
     verbs: ["get", "list"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["get", "list", "delete"]
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
@@ -64,6 +67,9 @@ spec:
             - /bin/sh
             - -c
             - |
+              echo "[LogNest] Cleaning up on-demand jobs..."
+              kubectl delete jobs -n {{ include "lognest.namespace" . }} \
+                -l lognest/trigger=ondemand --ignore-not-found --wait=false
               echo "[LogNest] Looking for PV bound to PVC {{ .Values.storage.pvc.name }}..."
               PV_NAME=$(kubectl get pvc {{ .Values.storage.pvc.name }} \
                 -n {{ include "lognest.namespace" . }} \
