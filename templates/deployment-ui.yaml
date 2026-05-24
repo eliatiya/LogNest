@@ -18,6 +18,7 @@ spec:
         {{- include "lognest.selectorLabels" . | nindent 8 }}
         lognest/component: ui
     spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
       {{- include "lognest.imagePullSecrets" . | nindent 6 }}
       {{- with .Values.ui.nodeSelector }}
       nodeSelector:
