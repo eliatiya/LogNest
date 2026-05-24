@@ -81,11 +81,22 @@ data:
           OUT_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.log"
           COLLECTED=0
 
-          # --- Rotated .gz files: only read if created after last collection ---
-          for GZ_FILE in $(ls "${CONTAINER_DIR}"/*.log.*.gz 2>/dev/null | sort); do
-            FILE_EPOCH=$(stat -c %Y "${GZ_FILE}" 2>/dev/null || echo "0")
+          # --- Rotated files: both .gz and plain rotated (e.g. 0.log.20260524-093000) ---
+          for ROT_FILE in $(ls "${CONTAINER_DIR}"/*.log.* 2>/dev/null | sort); do
+            # Skip the active .log files (only process rotated ones)
+            case "${ROT_FILE}" in
+              *.log) continue ;;
+            esac
+            FILE_EPOCH=$(stat -c %Y "${ROT_FILE}" 2>/dev/null || echo "0")
             if [ "${FILE_EPOCH}" -gt "${LAST_EPOCH}" ]; then
-              gunzip -c "${GZ_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
+              case "${ROT_FILE}" in
+                *.gz)
+                  gunzip -c "${ROT_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
+                  ;;
+                *)
+                  cat "${ROT_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
+                  ;;
+              esac
             fi
           done
 
