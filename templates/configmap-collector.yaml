@@ -60,13 +60,17 @@ data:
     # --------------------------------------------------------
     # Phase 1: Collect from /var/log/pods (node filesystem)
     # This gets active logs AND rotated .gz files
+    # Uses byte-offset tracking for incremental reads
     # --------------------------------------------------------
     echo "[LogNest] Phase 1: Reading from ${NODE_LOGS}"
+    OFFSETS_FILE="/data/.lognest_offsets"
 
     if [ -d "${NODE_LOGS}" ]; then
+      # Load previous offsets (format: filepath=bytes_read)
+      touch "${OFFSETS_FILE}"
+
       for NS_POD_DIR in "${NODE_LOGS}"/*/; do
         [ -d "${NS_POD_DIR}" ] || continue
-        # Directory name format: <namespace>_<pod-name>_<pod-uid>
         DIR_NAME=$(basename "${NS_POD_DIR}")
         NS=$(echo "${DIR_NAME}" | cut -d'_' -f1)
         POD=$(echo "${DIR_NAME}" | cut -d'_' -f2)
@@ -75,41 +79,31 @@ data:
           [ -d "${CONTAINER_DIR}" ] || continue
           CONTAINER=$(basename "${CONTAINER_DIR}")
           OUT_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.log"
-
-          # Collect all log files (active .log and rotated .log.gz)
-          # Sort by modification time to get chronological order
           COLLECTED=0
 
-          # First: rotated .gz files (older logs)
-          for GZ_FILE in $(find "${CONTAINER_DIR}" -name "*.log.*.gz" -newer_check 2>/dev/null | sort); do
-            # Check if file was modified after last collection
+          # --- Rotated .gz files: only read if created after last collection ---
+          for GZ_FILE in $(ls "${CONTAINER_DIR}"/*.log.*.gz 2>/dev/null | sort); do
             FILE_EPOCH=$(stat -c %Y "${GZ_FILE}" 2>/dev/null || echo "0")
             if [ "${FILE_EPOCH}" -gt "${LAST_EPOCH}" ]; then
               gunzip -c "${GZ_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
             fi
           done
 
-          # Fallback: find without -newer_check (busybox compatible)
-          if [ "${COLLECTED}" -eq 0 ]; then
-            for GZ_FILE in $(ls -t "${CONTAINER_DIR}"/*.log.*.gz 2>/dev/null | sort); do
-              FILE_EPOCH=$(stat -c %Y "${GZ_FILE}" 2>/dev/null || echo "0")
-              if [ "${FILE_EPOCH}" -gt "${LAST_EPOCH}" ]; then
-                gunzip -c "${GZ_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
-              fi
-            done
-          fi
+          # --- Active .log files: read only NEW bytes since last offset ---
+          for LOG_FILE in $(ls "${CONTAINER_DIR}"/*.log 2>/dev/null | sort); do
+            CURRENT_SIZE=$(stat -c %s "${LOG_FILE}" 2>/dev/null || echo "0")
+            # Get previously read offset for this file
+            PREV_OFFSET=$(grep "^${LOG_FILE}=" "${OFFSETS_FILE}" 2>/dev/null | tail -1 | cut -d'=' -f2)
+            PREV_OFFSET=${PREV_OFFSET:-0}
 
-          # Then: active .log files (current logs)
-          for LOG_FILE in $(ls -t "${CONTAINER_DIR}"/*.log 2>/dev/null | sort); do
-            FILE_EPOCH=$(stat -c %Y "${LOG_FILE}" 2>/dev/null || echo "0")
-            if [ "${FILE_EPOCH}" -gt "${LAST_EPOCH}" ]; then
-              # For active log files, only get lines newer than last collection
-              if [ "${LAST_EPOCH}" -gt 0 ]; then
-                cat "${LOG_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
-              else
-                cat "${LOG_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
-              fi
+            if [ "${CURRENT_SIZE}" -gt "${PREV_OFFSET}" ]; then
+              # Read only the new bytes (from offset to end)
+              dd if="${LOG_FILE}" bs=1 skip="${PREV_OFFSET}" 2>/dev/null >> "${OUT_FILE}" && COLLECTED=1
             fi
+
+            # Save new offset (will be written to offsets file at end)
+            # Use a temp file to batch updates
+            echo "${LOG_FILE}=${CURRENT_SIZE}" >> "${OFFSETS_FILE}.new"
           done
 
           if [ "${COLLECTED}" -eq 1 ] && [ -s "${OUT_FILE}" ]; then
@@ -120,6 +114,18 @@ data:
           fi
         done
       done
+
+      # Update offsets file with new values
+      if [ -f "${OFFSETS_FILE}.new" ]; then
+        # Merge: new offsets override old ones
+        # Keep old entries for files not seen this run, update the rest
+        while IFS='=' read -r filepath offset; do
+          if ! grep -q "^${filepath}=" "${OFFSETS_FILE}.new" 2>/dev/null; then
+            echo "${filepath}=${offset}" >> "${OFFSETS_FILE}.new"
+          fi
+        done < "${OFFSETS_FILE}"
+        mv "${OFFSETS_FILE}.new" "${OFFSETS_FILE}"
+      fi
     else
       echo "[LogNest] WARN: ${NODE_LOGS} not mounted — skipping node-level collection"
     fi
