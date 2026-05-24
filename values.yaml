@@ -56,7 +56,13 @@ collector:
 
   # Node selector, tolerations, affinity for the collector pods
   nodeSelector: {}
-  tolerations: []
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+    - key: "node-role.kubernetes.io/master"
+      operator: "Exists"
+      effect: "NoSchedule"
   affinity: {}
 
 # ============================================================
@@ -108,7 +114,13 @@ ui:
       memory: "512Mi"
 
   nodeSelector: {}
-  tolerations: []
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+    - key: "node-role.kubernetes.io/master"
+      operator: "Exists"
+      effect: "NoSchedule"
   affinity: {}
 
 # ============================================================
