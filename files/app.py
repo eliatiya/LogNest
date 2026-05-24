@@ -726,6 +726,7 @@ def downloads():
           <p>No archives yet — they are created after each collection run</p>
         </div>"""
 
+    select_all_btn = '<button class="btn btn-ghost btn-sm" onclick="var cb=document.getElementById(\'cb-all\');cb.checked=true;toggleAll(cb);">Select All</button>' if zips else ""
     body = f"""
     <div class="card">
       <div class="card-header">
@@ -739,7 +740,7 @@ def downloads():
         </span>
         <div style="display:flex;align-items:center;gap:12px">
           <span style="font-size:.75rem;color:var(--text-dim)">{len(zips)} archive{"s" if len(zips)!=1 else ""}</span>
-          {"<button class='btn btn-ghost btn-sm' onclick=\"var cb=document.getElementById('cb-all');cb.checked=true;toggleAll(cb);\">Select All</button>" if zips else ""}
+          {select_all_btn}
         </div>
       </div>
       {table}
