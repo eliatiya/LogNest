@@ -353,111 +353,154 @@ tr.selected td:first-child{{border-left:2px solid var(--accent)}}
 {body}
 </div>
 
-<div id="toast"></div>
-
 <!-- ── Multi-select floating bar ── -->
 <div id="sel-bar">
-  <span class="sel-count" id="sel-count">0</span>
-  <span class="sel-label">files selected</span>
+  <div style="display:flex;align-items:center;gap:8px">
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" stroke-width="2.5">
+      <polyline points="20 6 9 17 4 12"/>
+    </svg>
+    <span class="sel-count" id="sel-count">0</span>
+    <span class="sel-label" id="sel-label">items selected</span>
+  </div>
   <span class="sep"></span>
   <button class="btn btn-sm" onclick="downloadSelected()">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-    Download Selected
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+      <polyline points="7 10 12 15 17 10"/>
+      <line x1="12" y1="15" x2="12" y2="3"/>
+    </svg>
+    Download
   </button>
-  <button class="btn btn-ghost btn-sm" onclick="clearSelection()">
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+  <button class="btn btn-ghost btn-sm" onclick="clearAll()">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <line x1="18" y1="6" x2="6" y2="18"/>
+      <line x1="6" y1="6" x2="18" y2="18"/>
+    </svg>
     Clear
   </button>
 </div>
 
 <script>
-function toast(msg, type){{
-  var t=document.getElementById('toast');
-  t.textContent=msg; t.className='show '+(type||'');
-  setTimeout(function(){{t.className='';}},3000);
+var selectedItems = {{}};
+
+function toast(msg, type) {{
+  var t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'show ' + (type || '');
+  setTimeout(function() {{ t.className = ''; }}, 3000);
 }}
 
-/* ── Multi-select logic ── */
-var selectedFiles = {{}};
-
-function updateBar(){{
-  var count = Object.keys(selectedFiles).length;
-  var bar   = document.getElementById('sel-bar');
-  var cnt   = document.getElementById('sel-count');
-  cnt.textContent = count;
-  if(count > 0){{ bar.classList.add('visible'); }}
-  else {{ bar.classList.remove('visible'); }}
-}}
-
-function toggleRow(cb){{
-  var row = cb.closest('tr');
-  var run = cb.dataset.run;
-  var file = cb.dataset.file;
-  var key = run + '|' + file;
-  if(cb.checked){{
-    selectedFiles[key] = {{run: run, file: file}};
+function toggleRow(cb) {{
+  var row  = cb.closest('tr');
+  var key  = cb.dataset.run + '|' + cb.dataset.file;
+  if (cb.checked) {{
+    selectedItems[key] = {{ run: cb.dataset.run, file: cb.dataset.file, type: cb.dataset.type || 'log' }};
     row.classList.add('selected');
   }} else {{
-    delete selectedFiles[key];
+    delete selectedItems[key];
     row.classList.remove('selected');
   }}
+  syncHeaderCb();
   updateBar();
-  // update header checkbox state
-  var allCbs = document.querySelectorAll('.file-cb');
-  var headerCb = document.getElementById('cb-all');
-  if(headerCb){{
-    var checked = Array.from(allCbs).filter(function(c){{return c.checked;}}).length;
-    headerCb.indeterminate = checked > 0 && checked < allCbs.length;
-    headerCb.checked = checked === allCbs.length;
-  }}
 }}
 
-function toggleAll(cb){{
-  var allCbs = document.querySelectorAll('.file-cb');
-  allCbs.forEach(function(c){{
-    c.checked = cb.checked;
-    toggleRow(c);
+function syncHeaderCb() {{
+  var all    = document.querySelectorAll('.row-cb');
+  var hcb    = document.getElementById('cb-all');
+  if (!hcb || !all.length) return;
+  var n = Array.from(all).filter(function(c) {{ return c.checked; }}).length;
+  hcb.checked       = n === all.length;
+  hcb.indeterminate = n > 0 && n < all.length;
+}}
+
+function toggleAll(masterCb) {{
+  var all = document.querySelectorAll('.row-cb');
+  all.forEach(function(cb) {{
+    cb.checked = masterCb.checked;
+    var row = cb.closest('tr');
+    var key = cb.dataset.run + '|' + cb.dataset.file;
+    if (masterCb.checked) {{
+      selectedItems[key] = {{ run: cb.dataset.run, file: cb.dataset.file, type: cb.dataset.type || 'log' }};
+      row.classList.add('selected');
+    }} else {{
+      delete selectedItems[key];
+      row.classList.remove('selected');
+    }}
   }});
+  updateBar();
 }}
 
-function clearSelection(){{
-  selectedFiles = {{}};
-  document.querySelectorAll('.file-cb').forEach(function(c){{
-    c.checked = false;
-    c.closest('tr').classList.remove('selected');
+function clearAll() {{
+  selectedItems = {{}};
+  document.querySelectorAll('.row-cb').forEach(function(cb) {{
+    cb.checked = false;
+    cb.closest('tr').classList.remove('selected');
   }});
   var hcb = document.getElementById('cb-all');
-  if(hcb){{ hcb.checked = false; hcb.indeterminate = false; }}
+  if (hcb) {{ hcb.checked = false; hcb.indeterminate = false; }}
   updateBar();
 }}
 
-function downloadSelected(){{
-  var keys = Object.keys(selectedFiles);
-  if(keys.length === 0) return;
-  if(keys.length === 1){{
-    var f = selectedFiles[keys[0]];
-    window.location = '/download/log/' + encodeURIComponent(f.run) + '/' + encodeURIComponent(f.file);
-    return;
-  }}
-  // Build form and POST to multi-download endpoint
-  var form = document.createElement('form');
-  form.method = 'POST';
-  form.action = '/download/multi';
-  keys.forEach(function(k){{
-    var f = selectedFiles[k];
-    var i1 = document.createElement('input');
-    i1.type='hidden'; i1.name='run[]'; i1.value=f.run;
-    var i2 = document.createElement('input');
-    i2.type='hidden'; i2.name='file[]'; i2.value=f.file;
-    form.appendChild(i1);
-    form.appendChild(i2);
+function updateBar() {{
+  var keys  = Object.keys(selectedItems);
+  var count = keys.length;
+  var bar   = document.getElementById('sel-bar');
+  var cnt   = document.getElementById('sel-count');
+  var lbl   = document.getElementById('sel-label');
+  cnt.textContent = count;
+  lbl.textContent = count === 1 ? 'item selected' : 'items selected';
+  bar.classList.toggle('visible', count > 0);
+}}
+
+function downloadSelected() {{
+  var keys = Object.keys(selectedItems);
+  if (!keys.length) return;
+
+  // Separate logs from zips
+  var logs = keys.filter(function(k) {{ return selectedItems[k].type !== 'zip'; }});
+  var zips = keys.filter(function(k) {{ return selectedItems[k].type === 'zip'; }});
+
+  // Download zips individually (each is already a full archive)
+  zips.forEach(function(k) {{
+    var a = document.createElement('a');
+    a.href = '/download/zip/' + encodeURIComponent(selectedItems[k].file);
+    a.download = selectedItems[k].file;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
   }});
-  document.body.appendChild(form);
-  form.submit();
-  document.body.removeChild(form);
-  toast('Preparing ' + keys.length + ' files...', 'success');
+
+  // Download log files as a single zip
+  if (logs.length === 1) {{
+    var item = selectedItems[logs[0]];
+    var a = document.createElement('a');
+    a.href = '/download/log/' + encodeURIComponent(item.run) + '/' + encodeURIComponent(item.file);
+    a.download = item.file;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }} else if (logs.length > 1) {{
+    var form = document.createElement('form');
+    form.method = 'POST';
+    form.action = '/download/multi';
+    logs.forEach(function(k) {{
+      var item = selectedItems[k];
+      var i1 = document.createElement('input');
+      i1.type = 'hidden'; i1.name = 'run[]'; i1.value = item.run;
+      var i2 = document.createElement('input');
+      i2.type = 'hidden'; i2.name = 'file[]'; i2.value = item.file;
+      form.appendChild(i1);
+      form.appendChild(i2);
+    }});
+    document.body.appendChild(form);
+    form.submit();
+    document.body.removeChild(form);
+  }}
+
+  toast('Downloading ' + keys.length + ' item' + (keys.length > 1 ? 's' : '') + '...', 'success');
 }}
 </script>
+<div id="toast"></div>
 </body></html>"""
 
 # ------------------------------------------------------------------ page renderer
@@ -632,7 +675,7 @@ def downloads():
         for z in zips:
             sz   = _human_size(z.stat().st_size)
             name = z.name
-            # parse date from filename lognest_YYYY-MM-DD_HH-MM-SS.tar.gz
+            fn   = _html.escape(name)
             try:
                 ts   = name.replace("lognest_","").replace(".tar.gz","")
                 dt   = datetime.strptime(ts, "%Y-%m-%d_%H-%M-%S")
@@ -640,12 +683,21 @@ def downloads():
             except Exception:
                 date = "—"
             rows += f"""<tr>
-              <td class="mono">{_html.escape(name)}</td>
+              <td class="cb-wrap">
+                <input type="checkbox" class="row-cb"
+                       data-run="" data-file="{fn}" data-type="zip"
+                       onchange="toggleRow(this)"/>
+              </td>
+              <td class="mono">{fn}</td>
               <td>{date}</td>
               <td><span class="size">{sz}</span></td>
               <td>
-                <a class="btn btn-sm" href="/download/zip/{_html.escape(name)}">
-                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                <a class="btn btn-sm" href="/download/zip/{fn}">
+                  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" y1="15" x2="12" y2="3"/>
+                  </svg>
                   Download
                 </a>
               </td>
@@ -653,13 +705,24 @@ def downloads():
         table = f"""
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Archive</th><th>Date</th><th>Size</th><th>Action</th></tr></thead>
+            <thead>
+              <tr>
+                <th style="width:40px">
+                  <input type="checkbox" id="cb-all" onchange="toggleAll(this)" title="Select all"/>
+                </th>
+                <th>Archive</th><th>Date</th><th>Size</th><th>Action</th>
+              </tr>
+            </thead>
             <tbody>{rows}</tbody>
           </table>
         </div>"""
     else:
         table = """<div class="empty-state">
-          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
           <p>No archives yet — they are created after each collection run</p>
         </div>"""
 
@@ -667,10 +730,17 @@ def downloads():
     <div class="card">
       <div class="card-header">
         <span class="card-title">
-          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
           Compressed Archives
         </span>
-        <span style="font-size:.75rem;color:var(--text-dim)">{len(zips)} archive{"s" if len(zips)!=1 else ""}</span>
+        <div style="display:flex;align-items:center;gap:12px">
+          <span style="font-size:.75rem;color:var(--text-dim)">{len(zips)} archive{"s" if len(zips)!=1 else ""}</span>
+          {"<button class='btn btn-ghost btn-sm' onclick=\"var cb=document.getElementById('cb-all');cb.checked=true;toggleAll(cb);\">Select All</button>" if zips else ""}
+        </div>
       </div>
       {table}
     </div>"""
@@ -735,8 +805,8 @@ def files():
                 fn = _html.escape(f.name)
                 rows += f"""<tr>
                   <td class="cb-wrap">
-                    <input type="checkbox" class="file-cb"
-                           data-run="{r}" data-file="{fn}"
+                    <input type="checkbox" class="row-cb"
+                           data-run="{r}" data-file="{fn}" data-type="log"
                            onchange="toggleRow(this)"/>
                   </td>
                   <td><span class="badge badge-ns">{_html.escape(f.ns)}</span></td>
@@ -777,7 +847,7 @@ def files():
                     {len(all_files)} file{"s" if len(all_files)!=1 else ""}
                   </span>
                   <button class="btn btn-ghost btn-sm" type="button"
-                          onclick="selectAll()">Select All</button>
+                          onclick="var cb=document.getElementById('cb-all');cb.checked=true;toggleAll(cb);">Select All</button>
                 </div>
               </div>
               <div class="table-wrap">
@@ -799,14 +869,7 @@ def files():
                   <tbody>{rows}</tbody>
                 </table>
               </div>
-            </div>
-            <script>
-            function selectAll(){{
-              var cb = document.getElementById('cb-all');
-              cb.checked = true;
-              toggleAll(cb);
-            }}
-            </script>"""
+            </div>"""
         else:
             table_block = '<div class="empty-state"><p>No files match your search.</p></div>'
     else:
