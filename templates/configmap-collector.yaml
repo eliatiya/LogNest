@@ -12,138 +12,200 @@ metadata:
 data:
   collect.sh: |
     #!/bin/sh
-    # LogNest collector — intentionally NO set -e
-    # Every error is handled explicitly so one bad pod never kills the job.
+    # ============================================================
+    # LogNest Collector — Incremental, with .gz rotation support
+    # ============================================================
+    # - Reads logs from /var/log/pods (hostPath) to get rotated .gz files
+    # - Tracks last collection time per container to only collect new data
+    # - First run (no state file) collects everything
+    # - Always exits 0 — errors are logged, never fatal
+    # ============================================================
 
     LOGS_DIR="${LOGS_DIR:-/data/{{ .Values.storage.logsDir }}}"
     ZIP_DIR="${ZIP_DIR:-/data/{{ .Values.storage.logsZipDir }}}"
     RETENTION_MONTHS="{{ .Values.collector.retentionMonths }}"
     CAPACITY_THRESHOLD="{{ .Values.collector.capacityThresholdPercent }}"
+    NODE_LOGS="/var/log/pods"
+    STATE_FILE="/data/.lognest_last_collect"
     TIMESTAMP=$(date +"%Y-%m-%d_%H-%M-%S")
+    NOW_EPOCH=$(date +%s)
     RUN_DIR="${LOGS_DIR}/${TIMESTAMP}"
     ERRORS=0
+    FILE_COUNT=0
 
     echo "[LogNest] ============================================"
     echo "[LogNest] Starting log collection at ${TIMESTAMP}"
-    echo "[LogNest] LOGS_DIR=${LOGS_DIR}"
-    echo "[LogNest] ZIP_DIR=${ZIP_DIR}"
-    echo "[LogNest] Retention: ${RETENTION_MONTHS} month(s)"
-    echo "[LogNest] Capacity threshold: ${CAPACITY_THRESHOLD}%"
+    echo "[LogNest] Node: ${NODE_NAME:-unknown}"
+    echo "[LogNest] Mode: hostPath /var/log/pods + kubectl API"
     echo "[LogNest] ============================================"
 
     # --------------------------------------------------------
-    # Wait for PVC to be bound (needed when running as post-install Job)
+    # Load last collection timestamp (epoch seconds)
+    # If no state file exists, this is the first run — collect all
     # --------------------------------------------------------
-    PVC_NAME="{{ .Values.storage.pvc.name }}"
-    PVC_NS="{{ include "lognest.namespace" . }}"
-    echo "[LogNest] Waiting for PVC ${PVC_NAME} to be Bound..."
-    ATTEMPTS=0
-    while true; do
-      PHASE=$(kubectl get pvc "${PVC_NAME}" -n "${PVC_NS}" \
-        -o jsonpath='{.status.phase}' 2>/dev/null || echo "")
-      if [ "${PHASE}" = "Bound" ]; then
-        echo "[LogNest] PVC is Bound — continuing"
-        break
-      fi
-      ATTEMPTS=$((ATTEMPTS + 1))
-      if [ "${ATTEMPTS}" -ge 60 ]; then
-        echo "[LogNest] ERROR: PVC not bound after 5 minutes"
-        exit 1
-      fi
-      echo "[LogNest] PVC phase='${PHASE}' — waiting 5s (${ATTEMPTS}/60)..."
-      sleep 5
-    done
-    if ! kubectl version --client > /dev/null 2>&1; then
-      echo "[LogNest] ERROR: kubectl not found or not working"
-      exit 1
+    LAST_EPOCH=0
+    if [ -f "${STATE_FILE}" ]; then
+      LAST_EPOCH=$(cat "${STATE_FILE}" 2>/dev/null || echo "0")
+      echo "[LogNest] Incremental mode: collecting logs since epoch ${LAST_EPOCH}"
+    else
+      echo "[LogNest] First run: collecting ALL logs"
     fi
-    echo "[LogNest] kubectl OK: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
 
     # --------------------------------------------------------
     # Create directories
     # --------------------------------------------------------
-    mkdir -p "${RUN_DIR}" || { echo "[LogNest] ERROR: cannot create ${RUN_DIR}"; exit 1; }
-    mkdir -p "${ZIP_DIR}"  || { echo "[LogNest] ERROR: cannot create ${ZIP_DIR}";  exit 1; }
-    # --------------------------------------------------------
-    # Verify kubectl is available
-    # --------------------------------------------------------
-    if ! kubectl version --client > /dev/null 2>&1; then
-      echo "[LogNest] ERROR: kubectl not found or not working"
-      exit 1
-    fi
-    echo "[LogNest] kubectl OK: $(kubectl version --client --short 2>/dev/null || kubectl version --client)"
+    mkdir -p "${RUN_DIR}" || { echo "[LogNest] ERROR: cannot create ${RUN_DIR}"; exit 0; }
+    mkdir -p "${ZIP_DIR}" || { echo "[LogNest] ERROR: cannot create ${ZIP_DIR}"; exit 0; }
 
     # --------------------------------------------------------
-    # Create directories
+    # Phase 1: Collect from /var/log/pods (node filesystem)
+    # This gets active logs AND rotated .gz files
     # --------------------------------------------------------
-    mkdir -p "${RUN_DIR}" || { echo "[LogNest] ERROR: cannot create ${RUN_DIR}"; exit 1; }
-    mkdir -p "${ZIP_DIR}"  || { echo "[LogNest] ERROR: cannot create ${ZIP_DIR}";  exit 1; }
-    echo "[LogNest] Directories ready"
+    echo "[LogNest] Phase 1: Reading from ${NODE_LOGS}"
 
-    # --------------------------------------------------------
-    # Collect logs
-    # --------------------------------------------------------
-    {{- if .Values.collector.allNamespaces }}
-    NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
-    if [ -z "${NAMESPACES}" ]; then
-      echo "[LogNest] ERROR: could not list namespaces — check RBAC"
-      exit 1
-    fi
-    {{- else }}
-    NAMESPACES="{{ .Values.collector.namespaces | join " " }}"
-    {{- end }}
+    if [ -d "${NODE_LOGS}" ]; then
+      for NS_POD_DIR in "${NODE_LOGS}"/*/; do
+        [ -d "${NS_POD_DIR}" ] || continue
+        # Directory name format: <namespace>_<pod-name>_<pod-uid>
+        DIR_NAME=$(basename "${NS_POD_DIR}")
+        NS=$(echo "${DIR_NAME}" | cut -d'_' -f1)
+        POD=$(echo "${DIR_NAME}" | cut -d'_' -f2)
 
-    echo "[LogNest] Namespaces: ${NAMESPACES}"
-    FILE_COUNT=0
+        for CONTAINER_DIR in "${NS_POD_DIR}"/*/; do
+          [ -d "${CONTAINER_DIR}" ] || continue
+          CONTAINER=$(basename "${CONTAINER_DIR}")
+          OUT_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.log"
 
-    for NS in ${NAMESPACES}; do
-      PODS=$(kubectl get pods -n "${NS}" \
-        --no-headers \
-        -o custom-columns=":metadata.name" 2>/dev/null) || continue
+          # Collect all log files (active .log and rotated .log.gz)
+          # Sort by modification time to get chronological order
+          COLLECTED=0
 
-      for POD in ${PODS}; do
-        CONTAINERS=$(kubectl get pod "${POD}" -n "${NS}" \
-          -o jsonpath='{.spec.containers[*].name}' 2>/dev/null) || continue
-
-        for CONTAINER in ${CONTAINERS}; do
-          LOG_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.log"
-          echo "[LogNest] Collecting: ${NS}/${POD}/${CONTAINER}"
-
-          # Collect current logs (all lines, with timestamps)
-          kubectl logs "${POD}" \
-              -n "${NS}" \
-              -c "${CONTAINER}" \
-              --timestamps=true \
-              --tail=-1 \
-              2>/dev/null > "${LOG_FILE}" || \
-            echo "[LogNest] WARN: could not collect ${NS}/${POD}/${CONTAINER}" > "${LOG_FILE}"
-
-          # Also collect previous container logs if available (catches rotated/restarted logs)
-          PREV_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.previous.log"
-          if kubectl logs "${POD}" \
-              -n "${NS}" \
-              -c "${CONTAINER}" \
-              --previous \
-              --timestamps=true \
-              --tail=-1 \
-              2>/dev/null > "${PREV_FILE}"; then
-            # Only keep if non-empty
-            if [ -s "${PREV_FILE}" ]; then
-              echo "[LogNest] Collected previous logs for ${NS}/${POD}/${CONTAINER}"
-              FILE_COUNT=$((FILE_COUNT + 1))
-            else
-              rm -f "${PREV_FILE}"
+          # First: rotated .gz files (older logs)
+          for GZ_FILE in $(find "${CONTAINER_DIR}" -name "*.log.*.gz" -newer_check 2>/dev/null | sort); do
+            # Check if file was modified after last collection
+            FILE_EPOCH=$(stat -c %Y "${GZ_FILE}" 2>/dev/null || echo "0")
+            if [ "${FILE_EPOCH}" -gt "${LAST_EPOCH}" ]; then
+              gunzip -c "${GZ_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
             fi
-          else
-            rm -f "${PREV_FILE}" 2>/dev/null || true
+          done
+
+          # Fallback: find without -newer_check (busybox compatible)
+          if [ "${COLLECTED}" -eq 0 ]; then
+            for GZ_FILE in $(ls -t "${CONTAINER_DIR}"/*.log.*.gz 2>/dev/null | sort); do
+              FILE_EPOCH=$(stat -c %Y "${GZ_FILE}" 2>/dev/null || echo "0")
+              if [ "${FILE_EPOCH}" -gt "${LAST_EPOCH}" ]; then
+                gunzip -c "${GZ_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
+              fi
+            done
           fi
 
-          FILE_COUNT=$((FILE_COUNT + 1))
+          # Then: active .log files (current logs)
+          for LOG_FILE in $(ls -t "${CONTAINER_DIR}"/*.log 2>/dev/null | sort); do
+            FILE_EPOCH=$(stat -c %Y "${LOG_FILE}" 2>/dev/null || echo "0")
+            if [ "${FILE_EPOCH}" -gt "${LAST_EPOCH}" ]; then
+              # For active log files, only get lines newer than last collection
+              if [ "${LAST_EPOCH}" -gt 0 ]; then
+                cat "${LOG_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
+              else
+                cat "${LOG_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
+              fi
+            fi
+          done
+
+          if [ "${COLLECTED}" -eq 1 ] && [ -s "${OUT_FILE}" ]; then
+            FILE_COUNT=$((FILE_COUNT + 1))
+            echo "[LogNest] Collected: ${NS}/${POD}/${CONTAINER} (node logs)"
+          else
+            rm -f "${OUT_FILE}" 2>/dev/null
+          fi
         done
       done
-    done
+    else
+      echo "[LogNest] WARN: ${NODE_LOGS} not mounted — skipping node-level collection"
+    fi
 
-    echo "[LogNest] Collection done — ${FILE_COUNT} files, ${ERRORS} warnings"
+    # --------------------------------------------------------
+    # Phase 2: Collect via kubectl API (catches pods on other nodes
+    # in multi-node clusters, and --previous for restarted containers)
+    # --------------------------------------------------------
+    echo "[LogNest] Phase 2: kubectl API collection"
+
+    if kubectl version --client > /dev/null 2>&1; then
+      {{- if .Values.collector.allNamespaces }}
+      NAMESPACES=$(kubectl get namespaces -o jsonpath='{.items[*].metadata.name}' 2>/dev/null)
+      {{- else }}
+      NAMESPACES="{{ .Values.collector.namespaces | join " " }}"
+      {{- end }}
+
+      # Calculate --since-seconds for incremental
+      if [ "${LAST_EPOCH}" -gt 0 ]; then
+        SINCE_SECS=$((NOW_EPOCH - LAST_EPOCH + 60))
+        SINCE_FLAG="--since=${SINCE_SECS}s"
+      else
+        SINCE_FLAG=""
+      fi
+
+      for NS in ${NAMESPACES}; do
+        PODS=$(kubectl get pods -n "${NS}" --no-headers \
+          -o custom-columns=":metadata.name" 2>/dev/null) || continue
+
+        for POD in ${PODS}; do
+          CONTAINERS=$(kubectl get pod "${POD}" -n "${NS}" \
+            -o jsonpath='{.spec.containers[*].name}' 2>/dev/null) || continue
+
+          for CONTAINER in ${CONTAINERS}; do
+            API_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.api.log"
+
+            # Only collect via API if we didn't already get it from node logs
+            NODE_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.log"
+            if [ -f "${NODE_FILE}" ] && [ -s "${NODE_FILE}" ]; then
+              continue
+            fi
+
+            # Current container logs
+            if kubectl logs "${POD}" -n "${NS}" -c "${CONTAINER}" \
+                --timestamps=true ${SINCE_FLAG} \
+                2>/dev/null > "${API_FILE}"; then
+              if [ -s "${API_FILE}" ]; then
+                # Rename to standard format
+                mv "${API_FILE}" "${NODE_FILE}"
+                FILE_COUNT=$((FILE_COUNT + 1))
+                echo "[LogNest] Collected: ${NS}/${POD}/${CONTAINER} (API)"
+              else
+                rm -f "${API_FILE}"
+              fi
+            else
+              rm -f "${API_FILE}" 2>/dev/null
+            fi
+
+            # Previous container logs (catches restarts)
+            PREV_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.previous.log"
+            if kubectl logs "${POD}" -n "${NS}" -c "${CONTAINER}" \
+                --previous --timestamps=true ${SINCE_FLAG} \
+                2>/dev/null > "${PREV_FILE}"; then
+              if [ -s "${PREV_FILE}" ]; then
+                FILE_COUNT=$((FILE_COUNT + 1))
+                echo "[LogNest] Collected: ${NS}/${POD}/${CONTAINER} (API/previous)"
+              else
+                rm -f "${PREV_FILE}"
+              fi
+            else
+              rm -f "${PREV_FILE}" 2>/dev/null
+            fi
+          done
+        done
+      done
+    else
+      echo "[LogNest] WARN: kubectl not available — skipping API collection"
+    fi
+
+    echo "[LogNest] Collection done — ${FILE_COUNT} files"
+
+    # --------------------------------------------------------
+    # Save current timestamp as the new "last collection" marker
+    # --------------------------------------------------------
+    echo "${NOW_EPOCH}" > "${STATE_FILE}"
+    echo "[LogNest] State saved: next run will collect from epoch ${NOW_EPOCH}"
 
     # --------------------------------------------------------
     # Compress — only if we actually wrote files
@@ -154,84 +216,52 @@ data:
       if tar -czf "${ZIP_FILE}" -C "${LOGS_DIR}" "${TIMESTAMP}" 2>/dev/null; then
         echo "[LogNest] Archive created: ${ZIP_FILE}"
       else
-        echo "[LogNest] WARN: tar failed"
+        echo "[LogNest] WARN: tar compression failed"
       fi
     else
-      echo "[LogNest] WARN: no log files collected — skipping compression"
+      echo "[LogNest] No new logs collected — skipping compression"
+      rmdir "${RUN_DIR}" 2>/dev/null || true
     fi
 
     # --------------------------------------------------------
-    # Capacity-based cleanup (runs BEFORE time-based retention)
-    # Delete oldest runs first until disk usage is below threshold
+    # Capacity-based cleanup
     # --------------------------------------------------------
     if [ "${CAPACITY_THRESHOLD}" -gt 0 ] 2>/dev/null; then
-      DATA_DIR="/data"
-      echo "[LogNest] Checking disk capacity (threshold: ${CAPACITY_THRESHOLD}%)"
-
-      USED_PCT=$(df "${DATA_DIR}" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')
-      echo "[LogNest] Current disk usage: ${USED_PCT}%"
-
+      USED_PCT=$(df "/data" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')
       while [ "${USED_PCT:-0}" -ge "${CAPACITY_THRESHOLD}" ]; do
-        # Find the oldest run directory (skip the one we just created)
-        OLDEST_RUN=$(ls -1 "${LOGS_DIR}" 2>/dev/null | grep -v "^${TIMESTAMP}$" | sort | head -1)
-        OLDEST_ZIP="${ZIP_DIR}/lognest_${OLDEST_RUN}.tar.gz"
-
-        if [ -z "${OLDEST_RUN}" ]; then
-          echo "[LogNest] WARN: disk still above threshold but no old runs to delete"
-          break
-        fi
-
-        echo "[LogNest] Capacity cleanup: deleting oldest run ${OLDEST_RUN} (disk at ${USED_PCT}%)"
+        OLDEST_RUN=$(ls -1 "${LOGS_DIR}" 2>/dev/null | grep -v "^${TIMESTAMP}$" | grep -v "^\." | sort | head -1)
+        if [ -z "${OLDEST_RUN}" ]; then break; fi
+        echo "[LogNest] Capacity cleanup: deleting ${OLDEST_RUN} (disk at ${USED_PCT}%)"
         rm -rf "${LOGS_DIR:?}/${OLDEST_RUN}"
-        [ -f "${OLDEST_ZIP}" ] && rm -f "${OLDEST_ZIP}" && \
-          echo "[LogNest] Capacity cleanup: deleted archive ${OLDEST_ZIP}"
-
-        USED_PCT=$(df "${DATA_DIR}" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')
-        echo "[LogNest] Disk usage after cleanup: ${USED_PCT}%"
+        rm -f "${ZIP_DIR}/lognest_${OLDEST_RUN}.tar.gz" 2>/dev/null
+        USED_PCT=$(df "/data" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')
       done
     fi
 
     # --------------------------------------------------------
-    # Time-based retention: delete runs older than RETENTION_MONTHS
+    # Time-based retention
     # --------------------------------------------------------
     CUTOFF_EPOCH=$(awk -v months="${RETENTION_MONTHS}" \
       'BEGIN { print systime() - (months * 30 * 86400) }' 2>/dev/null) || true
 
-    if [ -n "${CUTOFF_EPOCH}" ]; then
-      echo "[LogNest] Retention: removing runs older than ${RETENTION_MONTHS} month(s)"
-
+    if [ -n "${CUTOFF_EPOCH}" ] && [ "${CUTOFF_EPOCH}" -gt 0 ]; then
       for DIR in "${LOGS_DIR}"/*/; do
         [ -d "${DIR}" ] || continue
         DIRNAME=$(basename "${DIR}")
-        DIR_EPOCH=$(echo "${DIRNAME}" | awk -F'[_-]' '{
-          cmd = "date -d \""$1"-"$2"-"$3" "$4":"$5":"$6"\" +%s 2>/dev/null"
-          cmd | getline ep; close(cmd); print ep+0
-        }' 2>/dev/null) || DIR_EPOCH=0
-
-        if [ "${DIR_EPOCH}" -gt 0 ] && [ "${DIR_EPOCH}" -lt "${CUTOFF_EPOCH}" ]; then
-          echo "[LogNest] Retention: deleting old run ${DIRNAME}"
+        DIR_MTIME=$(stat -c %Y "${DIR}" 2>/dev/null || echo "0")
+        if [ "${DIR_MTIME}" -gt 0 ] && [ "${DIR_MTIME}" -lt "${CUTOFF_EPOCH}" ]; then
+          echo "[LogNest] Retention: deleting ${DIRNAME}"
           rm -rf "${DIR}"
-        fi
-      done
-
-      for ZIPF in "${ZIP_DIR}"/lognest_*.tar.gz; do
-        [ -f "${ZIPF}" ] || continue
-        ZIPNAME=$(basename "${ZIPF}" .tar.gz | sed 's/^lognest_//')
-        ZIP_EPOCH=$(echo "${ZIPNAME}" | awk -F'[_-]' '{
-          cmd = "date -d \""$1"-"$2"-"$3" "$4":"$5":"$6"\" +%s 2>/dev/null"
-          cmd | getline ep; close(cmd); print ep+0
-        }' 2>/dev/null) || ZIP_EPOCH=0
-
-        if [ "${ZIP_EPOCH}" -gt 0 ] && [ "${ZIP_EPOCH}" -lt "${CUTOFF_EPOCH}" ]; then
-          echo "[LogNest] Retention: deleting old zip ${ZIPF}"
-          rm -f "${ZIPF}"
+          rm -f "${ZIP_DIR}/lognest_${DIRNAME}.tar.gz" 2>/dev/null
         fi
       done
     fi
 
-    echo "[LogNest] ============================================"
-    echo "[LogNest] Done. Files: ${FILE_COUNT}, Warnings: ${ERRORS}"
+    # --------------------------------------------------------
+    # Done
+    # --------------------------------------------------------
     FINAL_PCT=$(df "/data" 2>/dev/null | awk 'NR==2{gsub(/%/,"",$5); print $5}')
-    echo "[LogNest] Final disk usage: ${FINAL_PCT}%"
+    echo "[LogNest] ============================================"
+    echo "[LogNest] Done. Files: ${FILE_COUNT}, Disk: ${FINAL_PCT}%"
     echo "[LogNest] ============================================"
     exit 0

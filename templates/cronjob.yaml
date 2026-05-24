@@ -53,6 +53,10 @@ spec:
                   value: /data/{{ $root.Values.storage.logsDir }}
                 - name: ZIP_DIR
                   value: /data/{{ $root.Values.storage.logsZipDir }}
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.nodeName
               resources:
                 {{- toYaml $root.Values.collector.resources | nindent 16 }}
               volumeMounts:
@@ -60,6 +64,9 @@ spec:
                   mountPath: /data
                 - name: scripts
                   mountPath: /scripts
+                  readOnly: true
+                - name: node-logs
+                  mountPath: /var/log/pods
                   readOnly: true
           volumes:
             - name: data
@@ -69,4 +76,8 @@ spec:
               configMap:
                 name: {{ include "lognest.fullname" $root }}-collector-script
                 defaultMode: 0755
+            - name: node-logs
+              hostPath:
+                path: /var/log/pods
+                type: Directory
 {{- end }}
