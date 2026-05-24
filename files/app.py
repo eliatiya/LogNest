@@ -390,9 +390,36 @@ function toast(msg, type) {{
   setTimeout(function() {{ t.className = ''; }}, 3000);
 }}
 
+/* ── Persist selection across page reloads via sessionStorage ── */
+var STORE_KEY = 'lognest_sel';
+
+function loadSelection() {{
+  try {{
+    var raw = sessionStorage.getItem(STORE_KEY);
+    selectedItems = raw ? JSON.parse(raw) : {{}};
+  }} catch(e) {{ selectedItems = {{}}; }}
+}}
+
+function saveSelection() {{
+  try {{ sessionStorage.setItem(STORE_KEY, JSON.stringify(selectedItems)); }}
+  catch(e) {{}}
+}}
+
+function restoreCheckboxes() {{
+  document.querySelectorAll('.row-cb').forEach(function(cb) {{
+    var key = cb.dataset.run + '|' + cb.dataset.file;
+    if (selectedItems[key]) {{
+      cb.checked = true;
+      cb.closest('tr').classList.add('selected');
+    }}
+  }});
+  syncHeaderCb();
+  updateBar();
+}}
+
 function toggleRow(cb) {{
-  var row  = cb.closest('tr');
-  var key  = cb.dataset.run + '|' + cb.dataset.file;
+  var row = cb.closest('tr');
+  var key = cb.dataset.run + '|' + cb.dataset.file;
   if (cb.checked) {{
     selectedItems[key] = {{ run: cb.dataset.run, file: cb.dataset.file, type: cb.dataset.type || 'log' }};
     row.classList.add('selected');
@@ -400,13 +427,14 @@ function toggleRow(cb) {{
     delete selectedItems[key];
     row.classList.remove('selected');
   }}
+  saveSelection();
   syncHeaderCb();
   updateBar();
 }}
 
 function syncHeaderCb() {{
-  var all    = document.querySelectorAll('.row-cb');
-  var hcb    = document.getElementById('cb-all');
+  var all = document.querySelectorAll('.row-cb');
+  var hcb = document.getElementById('cb-all');
   if (!hcb || !all.length) return;
   var n = Array.from(all).filter(function(c) {{ return c.checked; }}).length;
   hcb.checked       = n === all.length;
@@ -414,8 +442,7 @@ function syncHeaderCb() {{
 }}
 
 function toggleAll(masterCb) {{
-  var all = document.querySelectorAll('.row-cb');
-  all.forEach(function(cb) {{
+  document.querySelectorAll('.row-cb').forEach(function(cb) {{
     cb.checked = masterCb.checked;
     var row = cb.closest('tr');
     var key = cb.dataset.run + '|' + cb.dataset.file;
@@ -427,11 +454,19 @@ function toggleAll(masterCb) {{
       row.classList.remove('selected');
     }}
   }});
+  saveSelection();
   updateBar();
 }}
 
-function clearAll() {{
+function selectAllVisible() {{
+  var hcb = document.getElementById('cb-all');
+  if (hcb) {{ hcb.checked = true; hcb.indeterminate = false; }}
+  toggleAll({{ checked: true }});
+}}
+
+function deselectAll() {{
   selectedItems = {{}};
+  saveSelection();
   document.querySelectorAll('.row-cb').forEach(function(cb) {{
     cb.checked = false;
     cb.closest('tr').classList.remove('selected');
@@ -440,6 +475,8 @@ function clearAll() {{
   if (hcb) {{ hcb.checked = false; hcb.indeterminate = false; }}
   updateBar();
 }}
+
+function clearAll() {{ deselectAll(); }}
 
 function updateBar() {{
   var keys  = Object.keys(selectedItems);
@@ -456,49 +493,44 @@ function downloadSelected() {{
   var keys = Object.keys(selectedItems);
   if (!keys.length) return;
 
-  // Separate logs from zips
   var logs = keys.filter(function(k) {{ return selectedItems[k].type !== 'zip'; }});
   var zips = keys.filter(function(k) {{ return selectedItems[k].type === 'zip'; }});
 
-  // Download zips individually (each is already a full archive)
   zips.forEach(function(k) {{
     var a = document.createElement('a');
     a.href = '/download/zip/' + encodeURIComponent(selectedItems[k].file);
     a.download = selectedItems[k].file;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
   }});
 
-  // Download log files as a single zip
   if (logs.length === 1) {{
     var item = selectedItems[logs[0]];
     var a = document.createElement('a');
     a.href = '/download/log/' + encodeURIComponent(item.run) + '/' + encodeURIComponent(item.file);
     a.download = item.file;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
   }} else if (logs.length > 1) {{
     var form = document.createElement('form');
-    form.method = 'POST';
-    form.action = '/download/multi';
+    form.method = 'POST'; form.action = '/download/multi';
     logs.forEach(function(k) {{
       var item = selectedItems[k];
       var i1 = document.createElement('input');
-      i1.type = 'hidden'; i1.name = 'run[]'; i1.value = item.run;
+      i1.type='hidden'; i1.name='run[]'; i1.value=item.run;
       var i2 = document.createElement('input');
-      i2.type = 'hidden'; i2.name = 'file[]'; i2.value = item.file;
-      form.appendChild(i1);
-      form.appendChild(i2);
+      i2.type='hidden'; i2.name='file[]'; i2.value=item.file;
+      form.appendChild(i1); form.appendChild(i2);
     }});
-    document.body.appendChild(form);
-    form.submit();
-    document.body.removeChild(form);
+    document.body.appendChild(form); form.submit(); document.body.removeChild(form);
   }}
 
   toast('Downloading ' + keys.length + ' item' + (keys.length > 1 ? 's' : '') + '...', 'success');
 }}
+
+/* ── Init on page load ── */
+document.addEventListener('DOMContentLoaded', function() {{
+  loadSelection();
+  restoreCheckboxes();
+}});
 </script>
 <div id="toast"></div>
 </body></html>"""
@@ -731,7 +763,7 @@ def downloads():
           <p>No archives yet — they are created after each collection run</p>
         </div>"""
 
-    select_all_btn = '<button class="btn btn-ghost btn-sm" onclick="var cb=document.getElementById(\'cb-all\');cb.checked=true;toggleAll(cb);">Select All</button>' if zips else ""
+    select_all_btn = '<button class="btn btn-ghost btn-sm" onclick="selectAllVisible()">Select All</button><button class="btn btn-ghost btn-sm" onclick="deselectAll()" style="margin-left:6px">Deselect All</button>' if zips else ""
     body = f"""
     <div class="card">
       <div class="card-header">
@@ -854,6 +886,8 @@ def files():
                   </span>
                   <button class="btn btn-ghost btn-sm" type="button"
                           onclick="var cb=document.getElementById('cb-all');cb.checked=true;toggleAll(cb);">Select All</button>
+                  <button class="btn btn-ghost btn-sm" type="button"
+                          onclick="deselectAll()">Deselect All</button>
                 </div>
               </div>
               <div class="table-wrap">
