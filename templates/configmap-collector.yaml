@@ -109,16 +109,36 @@ data:
           LOG_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.log"
           echo "[LogNest] Collecting: ${NS}/${POD}/${CONTAINER}"
 
-          if kubectl logs "${POD}" \
+          # Collect current logs (all lines, with timestamps)
+          kubectl logs "${POD}" \
               -n "${NS}" \
               -c "${CONTAINER}" \
               --timestamps=true \
-              2>/dev/null > "${LOG_FILE}"; then
-            FILE_COUNT=$((FILE_COUNT + 1))
-          else
+              --tail=-1 \
+              2>/dev/null > "${LOG_FILE}" || \
             echo "[LogNest] WARN: could not collect ${NS}/${POD}/${CONTAINER}" > "${LOG_FILE}"
-            ERRORS=$((ERRORS + 1))
+
+          # Also collect previous container logs if available (catches rotated/restarted logs)
+          PREV_FILE="${RUN_DIR}/${NS}__${POD}__${CONTAINER}__${TIMESTAMP}.previous.log"
+          if kubectl logs "${POD}" \
+              -n "${NS}" \
+              -c "${CONTAINER}" \
+              --previous \
+              --timestamps=true \
+              --tail=-1 \
+              2>/dev/null > "${PREV_FILE}"; then
+            # Only keep if non-empty
+            if [ -s "${PREV_FILE}" ]; then
+              echo "[LogNest] Collected previous logs for ${NS}/${POD}/${CONTAINER}"
+              FILE_COUNT=$((FILE_COUNT + 1))
+            else
+              rm -f "${PREV_FILE}"
+            fi
+          else
+            rm -f "${PREV_FILE}" 2>/dev/null || true
           fi
+
+          FILE_COUNT=$((FILE_COUNT + 1))
         done
       done
     done

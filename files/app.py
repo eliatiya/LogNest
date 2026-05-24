@@ -343,6 +343,10 @@ tr.selected td:first-child{{border-left:2px solid var(--accent)}}
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
       <span>Files</span>
     </a>
+    <a href="/collect" class="{a_collect}">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+      <span>On-Demand</span>
+    </a>
   </nav>
   <div class="header-right">
     <span class="header-badge">RKE2</span>
@@ -540,7 +544,8 @@ def render_page(tab, body, title_suffix=""):
     a = lambda t: "active" if tab == t else ""
     return PAGE.format(
         title_suffix=f" — {title_suffix}" if title_suffix else "",
-        a_dash=a("dashboard"), a_dl=a("downloads"), a_files=a("files"),
+        a_dash=a("dashboard"), a_dl=a("downloads"),
+        a_files=a("files"), a_collect=a("collect"),
         body=body
     )
 
@@ -979,6 +984,176 @@ def download_log(run, filename):
     if not path.exists() or not path.is_file():
         abort(404)
     return send_file(str(path), as_attachment=True, download_name=filename)
+
+
+# ------------------------------------------------------------------ on-demand collect
+import subprocess, json as _json
+
+ONDEMAND_LOG = Path(os.environ.get("LOGS_DIR", "/data/logs")) / ".ondemand_runs.json"
+K8S_NAMESPACE = os.environ.get("POD_NAMESPACE", "lognest")
+COLLECTOR_IMAGE = os.environ.get("COLLECTOR_IMAGE", "alpine/k8s:1.30.2")
+COLLECTOR_SA    = os.environ.get("COLLECTOR_SA", "lognest")
+COLLECTOR_CM    = os.environ.get("COLLECTOR_CM", "lognest-collector-script")
+PVC_NAME        = os.environ.get("PVC_NAME", "pvc-lognest")
+
+def load_ondemand_runs():
+    try:
+        if ONDEMAND_LOG.exists():
+            return _json.loads(ONDEMAND_LOG.read_text())
+    except Exception:
+        pass
+    return []
+
+def save_ondemand_run(entry):
+    runs = load_ondemand_runs()
+    runs.insert(0, entry)
+    runs = runs[:50]  # keep last 50
+    try:
+        ONDEMAND_LOG.write_text(_json.dumps(runs))
+    except Exception:
+        pass
+
+@app.route("/collect")
+def collect_page():
+    runs = load_ondemand_runs()
+
+    if runs:
+        rows = ""
+        for r in runs:
+            status     = r.get("status", "unknown")
+            triggered  = r.get("triggered", "—")
+            job_name   = r.get("job", "—")
+            note       = r.get("note", "")
+            status_cls = {"running": "badge-info", "completed": "badge-info",
+                          "failed": "badge-error", "triggered": "badge-warn"}.get(status, "badge-debug")
+            rows += f"""<tr>
+              <td class="mono">{_html.escape(triggered)}</td>
+              <td><span class="badge {status_cls}">{_html.escape(status)}</span></td>
+              <td class="mono">{_html.escape(job_name)}</td>
+              <td style="color:var(--text-dim);font-size:.8rem">{_html.escape(note)}</td>
+            </tr>"""
+        table = f"""
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Triggered At</th><th>Status</th><th>Job Name</th><th>Note</th></tr></thead>
+            <tbody>{rows}</tbody>
+          </table>
+        </div>"""
+    else:
+        table = """<div class="empty-state">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          <p>No on-demand runs yet — trigger one below</p>
+        </div>"""
+
+    body = f"""
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polygon points="5 3 19 12 5 21 5 3"/>
+          </svg>
+          On-Demand Log Collection
+        </span>
+      </div>
+      <div class="card-body">
+        <p style="color:var(--text-dim);font-size:.88rem;margin-bottom:20px;line-height:1.7">
+          Trigger an immediate log collection run outside the regular schedule.<br>
+          This creates a Kubernetes Job that collects logs from all pods across all namespaces,
+          including <strong style="color:var(--text)">previous container logs</strong> to capture
+          rotated log files that <code style="background:var(--surface2);padding:1px 5px;border-radius:3px">kubectl logs</code> would otherwise miss.
+        </p>
+        <form method="post" action="/collect/trigger" id="trigger-form">
+          <div class="controls" style="align-items:center">
+            <div class="field" style="min-width:300px">
+              <label>Note (optional)</label>
+              <input class="input" name="note" placeholder="e.g. pre-upgrade snapshot, incident investigation..." type="text"/>
+            </div>
+            <div class="field" style="min-width:auto;justify-content:flex-end">
+              <label>&nbsp;</label>
+              <button class="btn" type="submit" id="trigger-btn">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <polygon points="5 3 19 12 5 21 5 3"/>
+                </svg>
+                Trigger Collection Now
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="3" y="4" width="18" height="18" rx="2" ry="2"/>
+            <line x1="16" y1="2" x2="16" y2="6"/>
+            <line x1="8" y1="2" x2="8" y2="6"/>
+            <line x1="3" y1="10" x2="21" y2="10"/>
+          </svg>
+          Recent On-Demand Runs
+        </span>
+        <button class="btn btn-ghost btn-sm" onclick="location.reload()">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <polyline points="23 4 23 10 17 10"/>
+            <path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/>
+          </svg>
+          Refresh
+        </button>
+      </div>
+      {table}
+    </div>
+
+    <script>
+    document.getElementById('trigger-form').addEventListener('submit', function() {{
+      var btn = document.getElementById('trigger-btn');
+      btn.disabled = true;
+      btn.innerHTML = '<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="animation:spin 1s linear infinite"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 11-2.12-9.36L23 10"/></svg> Triggering...';
+    }});
+    </script>
+    <style>
+    @keyframes spin {{ from{{transform:rotate(0deg)}} to{{transform:rotate(360deg)}} }}
+    </style>"""
+
+    return render_page("collect", body, "On-Demand")
+
+
+@app.route("/collect/trigger", methods=["POST"])
+def collect_trigger():
+    note = request.form.get("note", "").strip()[:200]
+    ts   = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    job_name = f"lognest-ondemand-{ts}"
+
+    # Build kubectl create job command
+    cmd = [
+        "kubectl", "create", "job", job_name,
+        "--from=cronjob/lognest-collector-1",
+        "-n", K8S_NAMESPACE
+    ]
+
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+        if result.returncode == 0:
+            status = "triggered"
+            note_out = note or "Manual trigger from UI"
+        else:
+            status = "failed"
+            note_out = result.stderr.strip()[:300] or note
+    except Exception as e:
+        status = "failed"
+        note_out = str(e)[:300]
+
+    save_ondemand_run({
+        "triggered": ts,
+        "status": status,
+        "job": job_name,
+        "note": note_out
+    })
+
+    from flask import redirect, url_for
+    return redirect("/collect")
 
 
 if __name__ == "__main__":

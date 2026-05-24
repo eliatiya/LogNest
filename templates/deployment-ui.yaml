@@ -52,6 +52,18 @@ spec:
               value: /data/{{ .Values.storage.logsDir }}
             - name: ZIP_DIR
               value: /data/{{ .Values.storage.logsZipDir }}
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: COLLECTOR_IMAGE
+              value: {{ include "lognest.image" (dict "registry" .Values.global.imageRegistry "repository" .Values.collector.image.repository "tag" .Values.collector.image.tag) }}
+            - name: COLLECTOR_SA
+              value: {{ .Values.serviceAccount.name }}
+            - name: COLLECTOR_CM
+              value: {{ include "lognest.fullname" . }}-collector-script
+            - name: PVC_NAME
+              value: {{ .Values.storage.pvc.name }}
           livenessProbe:
             httpGet:
               path: /
