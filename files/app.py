@@ -580,7 +580,7 @@ def dashboard():
     pod_field = f"""
       <div class="field">
         <label>Pod / Container</label>
-        <select name="pod" onchange="this.form.submit()">
+        <select name="pod" id="pod-sel" onchange="this.form.submit()">
           <option value="">— Select pod —</option>{pod_opts}
         </select>
       </div>
@@ -596,7 +596,12 @@ def dashboard():
           <div class="controls">
             <div class="field">
               <label>Collection Run</label>
-              <select name="run" onchange="this.form.submit()">
+              <select name="run" id="run-sel"
+                onchange="
+                  var podSel=document.getElementById('pod-sel');
+                  if(podSel){{podSel.value='';}}
+                  this.form.submit();
+                ">
                 <option value="">— Select run —</option>{run_opts}
               </select>
             </div>
