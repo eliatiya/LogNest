@@ -59,6 +59,8 @@ spec:
                   value: "{{ $root.Values.collector.capacityThresholdPercent }}"
                 - name: COLLECTOR_THREADS
                   value: "8"
+                - name: MAX_FILE_SIZE_MB
+                  value: "100"
                 - name: NODE_NAME
                   valueFrom:
                     fieldRef:

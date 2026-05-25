@@ -18,6 +18,8 @@ OFFSETS_FILE   = Path("/data/.lognest_offsets")
 RETENTION_MONTHS    = int(os.environ.get("RETENTION_MONTHS", "1"))
 CAPACITY_THRESHOLD  = int(os.environ.get("CAPACITY_THRESHOLD", "80"))
 MAX_WORKERS         = int(os.environ.get("COLLECTOR_THREADS", "8"))
+MAX_FILE_SIZE_MB    = int(os.environ.get("MAX_FILE_SIZE_MB", "100"))  # Split files larger than this
+CHUNK_SIZE          = 8 * 1024 * 1024  # 8MB read chunks — never load more than this into memory
 TIMESTAMP      = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
 NOW_EPOCH      = int(time.time())
 
@@ -65,9 +67,59 @@ else:
     print(f"[LogNest] Incremental: collecting since epoch {LAST_EPOCH}")
 
 
+def get_split_writer(base_path):
+    """Returns a writer that splits output into multiple files at MAX_FILE_SIZE_MB."""
+    max_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+
+    class SplitWriter:
+        def __init__(self):
+            self.part = 0
+            self.current_size = 0
+            self.fh = None
+            self.files = []
+            self._open_next()
+
+        def _open_next(self):
+            if self.fh:
+                self.fh.close()
+            if self.part == 0:
+                path = base_path
+            else:
+                stem = base_path.stem
+                path = base_path.with_name(f"{stem}.part{self.part}{base_path.suffix}")
+            self.fh = open(path, 'ab')
+            self.files.append(path)
+            self.current_size = path.stat().st_size if path.exists() else 0
+
+        def write(self, data):
+            if isinstance(data, str):
+                data = data.encode('utf-8', errors='replace')
+            remaining = data
+            while remaining:
+                space = max_bytes - self.current_size
+                if space <= 0:
+                    self.part += 1
+                    self._open_next()
+                    space = max_bytes
+                chunk = remaining[:space]
+                self.fh.write(chunk)
+                self.current_size += len(chunk)
+                remaining = remaining[len(chunk):]
+
+        def close(self):
+            if self.fh:
+                self.fh.close()
+
+        def total_size(self):
+            return sum(f.stat().st_size for f in self.files if f.exists())
+
+    return SplitWriter()
+
+
 def collect_container_from_node(container_dir, ns, pod, container):
-    """Collect logs from a single container's node directory."""
+    """Collect logs from a single container's node directory. Streams in chunks."""
     out_file = RUN_DIR / f"{ns}__{pod}__{container}__{TIMESTAMP}.log"
+    writer = get_split_writer(out_file)
     collected = False
 
     try:
@@ -83,20 +135,27 @@ def collect_container_from_node(container_dir, ns, pod, container):
                 continue
             try:
                 if rot.suffix == '.gz':
-                    with gzip.open(rot, 'rt', errors='replace') as gz:
-                        content = gz.read()
-                    print(f"[LogNest]   ├─ Rotated (gz): {rot.name} ({len(content)} bytes)")
+                    with gzip.open(rot, 'rb') as gz:
+                        while True:
+                            chunk = gz.read(CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            writer.write(chunk)
+                            collected = True
+                    print(f"[LogNest]   ├─ Rotated (gz): {rot.name}")
                 else:
-                    content = rot.read_text(errors='replace')
-                    print(f"[LogNest]   ├─ Rotated (plain): {rot.name} ({len(content)} bytes)")
-                if content:
-                    with open(out_file, 'a') as f:
-                        f.write(content)
-                    collected = True
+                    with open(rot, 'rb') as fh:
+                        while True:
+                            chunk = fh.read(CHUNK_SIZE)
+                            if not chunk:
+                                break
+                            writer.write(chunk)
+                            collected = True
+                    print(f"[LogNest]   ├─ Rotated (plain): {rot.name}")
             except Exception as e:
                 print(f"[LogNest]   ├─ WARN: {rot.name}: {e}")
 
-        # 2. Active log file — incremental by byte offset
+        # 2. Active log file — incremental by byte offset, streamed in chunks
         active_logs = sorted([
             f for f in container_dir.iterdir()
             if f.suffix == '.log' and '.log.' not in f.name
@@ -112,28 +171,36 @@ def collect_container_from_node(container_dir, ns, pod, container):
                 try:
                     with open(log_file, 'rb') as fh:
                         fh.seek(prev_offset)
-                        new_data = fh.read()
-                    if new_data:
-                        with open(out_file, 'ab') as f:
-                            f.write(new_data)
-                        collected = True
-                        print(f"[LogNest]   ├─ Active: {log_file.name} +{new_bytes} bytes (offset {prev_offset} → {current_size})")
+                        bytes_read = 0
+                        while bytes_read < new_bytes:
+                            to_read = min(CHUNK_SIZE, new_bytes - bytes_read)
+                            chunk = fh.read(to_read)
+                            if not chunk:
+                                break
+                            writer.write(chunk)
+                            bytes_read += len(chunk)
+                    collected = True
+                    print(f"[LogNest]   ├─ Active: {log_file.name} +{new_bytes} bytes (offset {prev_offset} → {current_size})")
                 except Exception as e:
                     print(f"[LogNest]   ├─ WARN: {log_file.name}: {e}")
 
                 OFFSETS[file_key] = current_size
             else:
-                print(f"[LogNest]   ├─ Active: {log_file.name} (no new data, offset={prev_offset})")
+                print(f"[LogNest]   ├─ Active: {log_file.name} (no new data)")
 
     except Exception as e:
         print(f"[LogNest] ERROR: {ns}/{pod}/{container}: {e}")
 
-    if collected and out_file.exists() and out_file.stat().st_size > 0:
-        size = out_file.stat().st_size
-        print(f"[LogNest]   └─ ✓ {ns}/{pod}/{container} → {size} bytes")
+    writer.close()
+
+    total = writer.total_size()
+    if collected and total > 0:
+        parts = len(writer.files)
+        print(f"[LogNest]   └─ ✓ {ns}/{pod}/{container} → {total} bytes ({parts} file{'s' if parts > 1 else ''})")
         return str(out_file)
     else:
-        out_file.unlink(missing_ok=True)
+        for f in writer.files:
+            f.unlink(missing_ok=True)
         return None
 
 
