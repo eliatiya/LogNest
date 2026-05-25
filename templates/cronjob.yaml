@@ -17,8 +17,8 @@ spec:
   failedJobsHistoryLimit: 5
   jobTemplate:
     spec:
-      # 0 = no retries; the script handles its own errors and always exits 0
-      backoffLimit: 0
+      # Retry up to 3 times if pod fails to start (scheduling, mount issues)
+      backoffLimit: 3
       activeDeadlineSeconds: 7200
       template:
         metadata:
