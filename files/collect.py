@@ -201,7 +201,7 @@ def collect_from_api():
         try:
             cmd = ["kubectl", "logs", pod, "-n", ns, "-c", container,
                    "--timestamps=true"] + since_flag
-            result = subprocess.run(cmd, capture_output=True, timeout=60)
+            result = subprocess.run(cmd, capture_output=True, timeout=300)
             if result.returncode == 0 and result.stdout:
                 api_file.write_bytes(result.stdout)
                 return str(api_file)
@@ -213,7 +213,7 @@ def collect_from_api():
         try:
             cmd = ["kubectl", "logs", pod, "-n", ns, "-c", container,
                    "--previous", "--timestamps=true"] + since_flag
-            result = subprocess.run(cmd, capture_output=True, timeout=60)
+            result = subprocess.run(cmd, capture_output=True, timeout=300)
             if result.returncode == 0 and result.stdout:
                 prev_file.write_bytes(result.stdout)
                 return str(prev_file)
