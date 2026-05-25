@@ -85,14 +85,16 @@ def collect_container_from_node(container_dir, ns, pod, container):
                 if rot.suffix == '.gz':
                     with gzip.open(rot, 'rt', errors='replace') as gz:
                         content = gz.read()
+                    print(f"[LogNest]   ├─ Rotated (gz): {rot.name} ({len(content)} bytes)")
                 else:
                     content = rot.read_text(errors='replace')
+                    print(f"[LogNest]   ├─ Rotated (plain): {rot.name} ({len(content)} bytes)")
                 if content:
                     with open(out_file, 'a') as f:
                         f.write(content)
                     collected = True
             except Exception as e:
-                print(f"[LogNest] WARN: {rot}: {e}")
+                print(f"[LogNest]   ├─ WARN: {rot.name}: {e}")
 
         # 2. Active log file — incremental by byte offset
         active_logs = sorted([
@@ -106,6 +108,7 @@ def collect_container_from_node(container_dir, ns, pod, container):
             prev_offset = OFFSETS.get(file_key, 0)
 
             if current_size > prev_offset:
+                new_bytes = current_size - prev_offset
                 try:
                     with open(log_file, 'rb') as fh:
                         fh.seek(prev_offset)
@@ -114,15 +117,20 @@ def collect_container_from_node(container_dir, ns, pod, container):
                         with open(out_file, 'ab') as f:
                             f.write(new_data)
                         collected = True
+                        print(f"[LogNest]   ├─ Active: {log_file.name} +{new_bytes} bytes (offset {prev_offset} → {current_size})")
                 except Exception as e:
-                    print(f"[LogNest] WARN: {log_file}: {e}")
+                    print(f"[LogNest]   ├─ WARN: {log_file.name}: {e}")
 
                 OFFSETS[file_key] = current_size
+            else:
+                print(f"[LogNest]   ├─ Active: {log_file.name} (no new data, offset={prev_offset})")
 
     except Exception as e:
         print(f"[LogNest] ERROR: {ns}/{pod}/{container}: {e}")
 
     if collected and out_file.exists() and out_file.stat().st_size > 0:
+        size = out_file.stat().st_size
+        print(f"[LogNest]   └─ ✓ {ns}/{pod}/{container} → {size} bytes")
         return str(out_file)
     else:
         out_file.unlink(missing_ok=True)
