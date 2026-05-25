@@ -46,13 +46,19 @@ spec:
               image: {{ include "lognest.image" (dict "registry" $root.Values.global.imageRegistry "repository" $root.Values.collector.image.repository "tag" $root.Values.collector.image.tag) }}
               imagePullPolicy: {{ $root.Values.collector.image.pullPolicy }}
               command:
-                - /bin/sh
-                - /scripts/collect.sh
+                - python3
+                - /scripts/collect.py
               env:
                 - name: LOGS_DIR
                   value: /data/{{ $root.Values.storage.logsDir }}
                 - name: ZIP_DIR
                   value: /data/{{ $root.Values.storage.logsZipDir }}
+                - name: RETENTION_MONTHS
+                  value: "{{ $root.Values.collector.retentionMonths }}"
+                - name: CAPACITY_THRESHOLD
+                  value: "{{ $root.Values.collector.capacityThresholdPercent }}"
+                - name: COLLECTOR_THREADS
+                  value: "8"
                 - name: NODE_NAME
                   valueFrom:
                     fieldRef:
