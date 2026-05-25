@@ -9,6 +9,14 @@ from flask import Flask, render_template_string, send_file, request, abort, json
 
 app = Flask(__name__)
 
+import logging
+# Only log non-2xx responses
+@app.after_request
+def log_errors(response):
+    if response.status_code >= 400:
+        app.logger.warning(f"{request.method} {request.path} → {response.status_code}")
+    return response
+
 LOGS_DIR = Path(os.environ.get("LOGS_DIR", "/data/logs"))
 ZIP_DIR  = Path(os.environ.get("ZIP_DIR",  "/data/logs_zip"))
 

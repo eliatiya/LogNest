@@ -47,9 +47,9 @@ spec:
                 --workers 2 \
                 --bind 0.0.0.0:8080 \
                 --timeout 120 \
-                --access-logfile - \
+                --access-logfile /dev/null \
                 --error-logfile - \
-                --log-level info \
+                --log-level warning \
                 app:app
           ports:
             - name: http
