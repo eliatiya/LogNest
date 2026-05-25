@@ -83,10 +83,6 @@ data:
 
           # --- Rotated files: both .gz and plain rotated (e.g. 0.log.20260524-093000) ---
           for ROT_FILE in $(ls "${CONTAINER_DIR}"/*.log.* 2>/dev/null | sort); do
-            # Skip the active .log files (only process rotated ones)
-            case "${ROT_FILE}" in
-              *.log) continue ;;
-            esac
             FILE_EPOCH=$(stat -c %Y "${ROT_FILE}" 2>/dev/null || echo "0")
             if [ "${FILE_EPOCH}" -gt "${LAST_EPOCH}" ]; then
               case "${ROT_FILE}" in
@@ -102,14 +98,19 @@ data:
 
           # --- Active .log files: read only NEW bytes since last offset ---
           for LOG_FILE in $(ls "${CONTAINER_DIR}"/*.log 2>/dev/null | sort); do
+            # Skip rotated files that match *.log.* (already handled above)
+            case "$(basename "${LOG_FILE}")" in
+              *.log.*) continue ;;
+            esac
             CURRENT_SIZE=$(stat -c %s "${LOG_FILE}" 2>/dev/null || echo "0")
             # Get previously read offset for this file
             PREV_OFFSET=$(grep "^${LOG_FILE}=" "${OFFSETS_FILE}" 2>/dev/null | tail -1 | cut -d'=' -f2)
             PREV_OFFSET=${PREV_OFFSET:-0}
 
             if [ "${CURRENT_SIZE}" -gt "${PREV_OFFSET}" ]; then
-              # Read only the new bytes (from offset to end)
-              dd if="${LOG_FILE}" bs=1 skip="${PREV_OFFSET}" 2>/dev/null >> "${OUT_FILE}" && COLLECTED=1
+              # Read only the new bytes using tail
+              BYTES_TO_READ=$((CURRENT_SIZE - PREV_OFFSET))
+              tail -c "${BYTES_TO_READ}" "${LOG_FILE}" >> "${OUT_FILE}" 2>/dev/null && COLLECTED=1
             fi
 
             # Save new offset (will be written to offsets file at end)
