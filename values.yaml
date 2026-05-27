@@ -139,24 +139,6 @@ ingress:
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
 
 # ============================================================
-# Rotation Watcher DaemonSet
-# ============================================================
-# Runs on every node, watches for log rotation events and
-# immediately backs up rotated files to NFS before containerd
-# can delete them. Prevents log loss between collection runs.
-watcher:
-  enabled: true
-  # How often to scan for new rotated files (seconds)
-  scanInterval: 30
-  tolerations:
-    - key: "node-role.kubernetes.io/control-plane"
-      operator: "Exists"
-      effect: "NoSchedule"
-    - key: "node-role.kubernetes.io/master"
-      operator: "Exists"
-      effect: "NoSchedule"
-
-# ============================================================
 # Service Account
 # ============================================================
 serviceAccount:
