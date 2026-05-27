@@ -378,29 +378,40 @@ def compress_run():
 
 
 def cleanup_capacity():
-    """Delete oldest runs if disk usage exceeds threshold."""
+    """Delete oldest runs if LogNest data exceeds threshold % of PVC size."""
     if CAPACITY_THRESHOLD <= 0:
         return
-    try:
-        stat = os.statvfs("/data")
-        used_pct = int((1 - stat.f_bavail / stat.f_blocks) * 100)
-    except Exception:
-        return
 
-    while used_pct >= CAPACITY_THRESHOLD:
+    # Get PVC size from env (in Gi) — default 150Gi
+    pvc_size_str = os.environ.get("PVC_SIZE", "150Gi")
+    pvc_bytes = int(pvc_size_str.replace("Gi", "")) * 1024 * 1024 * 1024
+
+    threshold_bytes = int(pvc_bytes * CAPACITY_THRESHOLD / 100)
+
+    def get_data_size():
+        total = 0
+        for f in Path("/data").rglob("*"):
+            if f.is_file():
+                try:
+                    total += f.stat().st_size
+                except Exception:
+                    pass
+        return total
+
+    used = get_data_size()
+    used_pct = int(used / pvc_bytes * 100) if pvc_bytes > 0 else 0
+
+    while used >= threshold_bytes:
         runs = sorted([d for d in LOGS_DIR.iterdir() if d.is_dir() and d.name != TIMESTAMP])
         if not runs:
             break
         oldest = runs[0]
-        print(f"[LogNest] Capacity cleanup: deleting {oldest.name} (disk at {used_pct}%)")
+        print(f"[LogNest] Capacity cleanup: deleting {oldest.name} (data at {used_pct}% of PVC)")
         shutil.rmtree(oldest, ignore_errors=True)
         zip_f = ZIP_DIR / f"lognest_{oldest.name}.tar.gz"
         zip_f.unlink(missing_ok=True)
-        try:
-            stat = os.statvfs("/data")
-            used_pct = int((1 - stat.f_bavail / stat.f_blocks) * 100)
-        except Exception:
-            break
+        used = get_data_size()
+        used_pct = int(used / pvc_bytes * 100) if pvc_bytes > 0 else 0
 
 
 def cleanup_retention():
@@ -433,12 +444,40 @@ if __name__ == "__main__":
     cleanup_retention()
 
     try:
+        # PVC usage: actual LogNest data size
+        pvc_used = 0
+        for f in Path("/data").rglob("*"):
+            if f.is_file():
+                try:
+                    pvc_used += f.stat().st_size
+                except Exception:
+                    pass
+        pvc_str = ""
+        pvc_bytes = pvc_used
+        for unit in ["B", "KB", "MB", "GB"]:
+            if pvc_bytes < 1024:
+                pvc_str = f"{pvc_bytes:.1f} {unit}"
+                break
+            pvc_bytes /= 1024
+        else:
+            pvc_str = f"{pvc_bytes:.1f} TB"
+
+        # NFS disk: underlying filesystem usage
         stat = os.statvfs("/data")
-        used_pct = int((1 - stat.f_bavail / stat.f_blocks) * 100)
+        nfs_total = stat.f_blocks * stat.f_frsize
+        nfs_used = (stat.f_blocks - stat.f_bavail) * stat.f_frsize
+        nfs_pct = int(nfs_used / nfs_total * 100) if nfs_total > 0 else 0
+        nfs_total_gb = nfs_total / (1024**3)
+        nfs_used_gb = nfs_used / (1024**3)
     except Exception:
-        used_pct = "?"
+        pvc_str = "?"
+        nfs_pct = "?"
+        nfs_used_gb = "?"
+        nfs_total_gb = "?"
 
     print(f"[LogNest] ============================================")
-    print(f"[LogNest] Done. Files: {total}, Disk: {used_pct}%")
+    print(f"[LogNest] Done. Files: {total}")
+    print(f"[LogNest] PVC data used: {pvc_str}")
+    print(f"[LogNest] NFS disk: {nfs_used_gb:.1f}GB / {nfs_total_gb:.1f}GB ({nfs_pct}%)")
     print(f"[LogNest] ============================================")
     sys.exit(0)

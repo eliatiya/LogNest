@@ -60,6 +60,8 @@ spec:
                   value: "{{ $root.Values.collector.retentionMonths }}"
                 - name: CAPACITY_THRESHOLD
                   value: "{{ $root.Values.collector.capacityThresholdPercent }}"
+                - name: PVC_SIZE
+                  value: "{{ $root.Values.storage.pvc.size }}"
                 - name: COLLECTOR_THREADS
                   value: "8"
                 - name: MAX_FILE_SIZE_MB
