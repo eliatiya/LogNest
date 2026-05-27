@@ -67,13 +67,28 @@ def get_stats():
         for r in runs if (LOGS_DIR / r).is_dir()
     )
     zips = list(get_zips())
-    storage = sum(z.stat().st_size for z in zips) if zips else 0
+    # Calculate combined size of logs + logs_zip folders
+    total_size = 0
+    if LOGS_DIR.exists():
+        for f in LOGS_DIR.rglob("*"):
+            if f.is_file():
+                try:
+                    total_size += f.stat().st_size
+                except Exception:
+                    pass
+    if ZIP_DIR.exists():
+        for f in ZIP_DIR.rglob("*"):
+            if f.is_file():
+                try:
+                    total_size += f.stat().st_size
+                except Exception:
+                    pass
     last_run = runs[0] if runs else "Never"
     return {
         "runs": len(runs),
         "files": total_files,
         "zips": len(zips),
-        "storage": _human_size(storage),
+        "storage": _human_size(total_size),
         "last_run": last_run,
     }
 
