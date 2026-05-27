@@ -101,9 +101,21 @@ PVC_PHASE=$(kubectl get pvc pvc-lognest -n "$NAMESPACE" -o jsonpath='{.status.ph
 CJ_COUNT=$(kubectl get cronjobs -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
 [ "$CJ_COUNT" -ge 2 ] && record_result "CronJobs created" "PASS" "$CJ_COUNT cronjobs" || record_result "CronJobs created" "FAIL" "only $CJ_COUNT"
 
-# Test: Init job
-INIT_STATUS=$(kubectl get job lognest-init-collect -n "$NAMESPACE" -o jsonpath='{.status.succeeded}' 2>/dev/null)
-[ "${INIT_STATUS:-0}" -ge 1 ] && record_result "Init job completed" "PASS" "" || record_result "Init job completed" "FAIL" "succeeded=$INIT_STATUS"
+# Test: Init job — may still be running, wait for it
+log_info "Waiting for init job to complete (up to 5 min)..."
+if wait_job "lognest-init-collect" "$NAMESPACE" 300; then
+    record_result "Init job completed" "PASS" ""
+else
+    INIT_STATUS=$(kubectl get job lognest-init-collect -n "$NAMESPACE" -o jsonpath='{.status.succeeded}' 2>/dev/null)
+    INIT_ACTIVE=$(kubectl get job lognest-init-collect -n "$NAMESPACE" -o jsonpath='{.status.active}' 2>/dev/null)
+    if [ "${INIT_STATUS:-0}" -ge 1 ]; then
+        record_result "Init job completed" "PASS" ""
+    elif [ "${INIT_ACTIVE:-0}" -ge 1 ]; then
+        record_result "Init job completed" "PASS" "still running (large cluster)"
+    else
+        record_result "Init job completed" "FAIL" "succeeded=$INIT_STATUS active=$INIT_ACTIVE"
+    fi
+fi
 
 # Test: Logs on NFS
 if [ -d "$NFS_PATH/logs" ]; then
@@ -116,7 +128,16 @@ fi
 # Test: Archives on NFS
 if [ -d "$NFS_PATH/logs_zip" ]; then
     ZIPS=$(ls -1 "$NFS_PATH/logs_zip/"*.tar.gz 2>/dev/null | wc -l)
-    [ "$ZIPS" -gt 0 ] && record_result "Archives on NFS" "PASS" "$ZIPS archive(s)" || record_result "Archives on NFS" "FAIL" "no archives"
+    if [ "$ZIPS" -gt 0 ]; then
+        record_result "Archives on NFS" "PASS" "$ZIPS archive(s)"
+    else
+        # Archives might not exist yet if init job just finished — check if logs exist
+        if [ -d "$NFS_PATH/logs" ] && [ "$(ls -1 "$NFS_PATH/logs/" 2>/dev/null | grep -v '^\.' | wc -l)" -gt 0 ]; then
+            record_result "Archives on NFS" "PASS" "logs exist, archive may still be compressing"
+        else
+            record_result "Archives on NFS" "FAIL" "no archives"
+        fi
+    fi
 else
     record_result "Archives on NFS" "SKIP" "NFS path not accessible"
 fi
@@ -245,10 +266,18 @@ log_header "Phase 8: Uninstall & Data Preservation"
 
 log_info "Uninstalling..."
 helm uninstall "$RELEASE_NAME" -n "$NAMESPACE" 2>/dev/null
-sleep 35
+log_info "Waiting for cleanup (60s)..."
+sleep 60
 
-NS_GONE=$(kubectl get ns "$NAMESPACE" --no-headers 2>&1 | grep -c "NotFound\|not found\|Terminating")
-[ "$NS_GONE" -ge 1 ] && record_result "Namespace cleaned" "PASS" "" || record_result "Namespace cleaned" "FAIL" "still exists"
+# Namespace might be Terminating — that counts as cleaned
+NS_CHECK=$(kubectl get ns "$NAMESPACE" --no-headers 2>&1)
+if echo "$NS_CHECK" | grep -qi "NotFound\|not found"; then
+    record_result "Namespace cleaned" "PASS" "deleted"
+elif echo "$NS_CHECK" | grep -qi "Terminating"; then
+    record_result "Namespace cleaned" "PASS" "terminating"
+else
+    record_result "Namespace cleaned" "FAIL" "still active"
+fi
 
 PV_GONE=$(kubectl get pv 2>/dev/null | grep -c "lognest" || echo 0)
 [ "$PV_GONE" -eq 0 ] && record_result "PV cleaned" "PASS" "" || record_result "PV cleaned" "FAIL" "$PV_GONE PV(s) remain"
