@@ -279,9 +279,10 @@ def collect_from_api():
             result = subprocess.run(cmd, capture_output=True, timeout=300)
             if result.returncode == 0 and result.stdout:
                 api_file.write_bytes(result.stdout)
+                print(f"[LogNest]   └─ ✓ {ns}/{pod}/{container} → {len(result.stdout)} bytes (API)")
                 return str(api_file)
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[LogNest]   ├─ WARN: {ns}/{pod}/{container}: {e}")
 
         # Try --previous
         prev_file = RUN_DIR / f"{ns}__{pod}__{container}__{TIMESTAMP}.previous.log"
@@ -291,6 +292,7 @@ def collect_from_api():
             result = subprocess.run(cmd, capture_output=True, timeout=300)
             if result.returncode == 0 and result.stdout:
                 prev_file.write_bytes(result.stdout)
+                print(f"[LogNest]   └─ ✓ {ns}/{pod}/{container} → {len(result.stdout)} bytes (API/previous)")
                 return str(prev_file)
         except Exception:
             pass
