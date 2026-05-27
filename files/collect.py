@@ -221,7 +221,7 @@ def collect_container_from_node(container_dir, ns, pod, container):
 
 
 def collect_from_node():
-    """Phase 1: Collect from /var/log/pods using thread pool."""
+    """Phase 1: Collect from /var/log/pods and watcher backup using thread pool."""
     if not NODE_LOGS.is_dir():
         print(f"[LogNest] WARN: {NODE_LOGS} not mounted — skipping")
         return 0
@@ -241,6 +241,28 @@ def collect_from_node():
                 continue
             container = container_dir.name
             tasks.append((container_dir, ns, pod, container))
+
+    # Also check watcher backup directory for rotated files that
+    # may have been deleted from the node but backed up by the watcher
+    WATCHER_BACKUP = Path("/data/rotated")
+    if WATCHER_BACKUP.is_dir():
+        for ns_dir in WATCHER_BACKUP.iterdir():
+            if not ns_dir.is_dir():
+                continue
+            for pod_dir in ns_dir.iterdir():
+                if not pod_dir.is_dir():
+                    continue
+                for container_dir in pod_dir.iterdir():
+                    if not container_dir.is_dir():
+                        continue
+                    # Check if we already have this from the node
+                    key = f"{ns_dir.name}__{pod_dir.name}__{container_dir.name}"
+                    already_in_tasks = any(
+                        t[1] == ns_dir.name and t[2] == pod_dir.name and t[3] == container_dir.name
+                        for t in tasks
+                    )
+                    if not already_in_tasks:
+                        tasks.append((container_dir, ns_dir.name, pod_dir.name, container_dir.name))
 
     print(f"[LogNest] Phase 1: {len(tasks)} containers to process ({MAX_WORKERS} threads)")
     collected = 0

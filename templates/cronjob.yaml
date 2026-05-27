@@ -1,5 +1,8 @@
 {{- $root := . }}
-{{- $schedules := list .Values.collector.schedule1 .Values.collector.schedule2 }}
+{{- $schedules := list .Values.collector.schedule1 }}
+{{- if .Values.collector.schedule2 }}
+{{- $schedules = append $schedules .Values.collector.schedule2 }}
+{{- end }}
 {{- range $i, $schedule := $schedules }}
 ---
 apiVersion: batch/v1

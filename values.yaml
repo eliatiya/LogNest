@@ -22,10 +22,11 @@ namespace:
 # Log Collector CronJob
 # ============================================================
 collector:
-  # Cron schedule for first daily run (default 02:00 UTC)
-  schedule1: "0 2 * * *"
-  # Cron schedule for second daily run (default 14:00 UTC)
-  schedule2: "0 14 * * *"
+  # Cron schedule — default every 4 hours for minimal log loss risk
+  # Format: standard cron (minute hour day month weekday)
+  schedule1: "0 */4 * * *"
+  # Second schedule (optional) — leave empty to disable
+  schedule2: ""
 
   # Collect logs from all namespaces (true) or specific ones
   allNamespaces: true
@@ -136,6 +137,24 @@ ingress:
   annotations:
     nginx.ingress.kubernetes.io/proxy-body-size: "500m"
     nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+
+# ============================================================
+# Rotation Watcher DaemonSet
+# ============================================================
+# Runs on every node, watches for log rotation events and
+# immediately backs up rotated files to NFS before containerd
+# can delete them. Prevents log loss between collection runs.
+watcher:
+  enabled: true
+  # How often to scan for new rotated files (seconds)
+  scanInterval: 30
+  tolerations:
+    - key: "node-role.kubernetes.io/control-plane"
+      operator: "Exists"
+      effect: "NoSchedule"
+    - key: "node-role.kubernetes.io/master"
+      operator: "Exists"
+      effect: "NoSchedule"
 
 # ============================================================
 # Service Account

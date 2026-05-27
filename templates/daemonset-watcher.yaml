@@ -1,0 +1,76 @@
+{{- if .Values.watcher.enabled }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "lognest.fullname" . }}-watcher
+  namespace: {{ include "lognest.namespace" . }}
+  labels:
+    {{- include "lognest.labels" . | nindent 4 }}
+    lognest/component: watcher
+spec:
+  selector:
+    matchLabels:
+      {{- include "lognest.selectorLabels" . | nindent 6 }}
+      lognest/component: watcher
+  template:
+    metadata:
+      labels:
+        {{- include "lognest.selectorLabels" . | nindent 8 }}
+        lognest/component: watcher
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- include "lognest.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.watcher.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: watcher
+          image: {{ include "lognest.image" (dict "registry" .Values.global.imageRegistry "repository" "python" "tag" "3.11-slim") }}
+          command:
+            - /bin/sh
+            - -c
+            - |
+              cp /scripts/watcher.py /app/watcher.py
+              exec python3 /app/watcher.py
+          env:
+            - name: BACKUP_DIR
+              value: /data/rotated
+            - name: SCAN_INTERVAL
+              value: "{{ .Values.watcher.scanInterval }}"
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "64Mi"
+          volumeMounts:
+            - name: node-logs
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: app
+              mountPath: /app
+      volumes:
+        - name: node-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.storage.pvc.name }}
+        - name: scripts
+          configMap:
+            name: {{ include "lognest.fullname" . }}-watcher
+        - name: app
+          emptyDir: {}
+{{- end }}
