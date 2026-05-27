@@ -61,6 +61,10 @@ RUN_DIR = LOGS_DIR / TIMESTAMP
 RUN_DIR.mkdir(parents=True, exist_ok=True)
 ZIP_DIR.mkdir(parents=True, exist_ok=True)
 
+# Track what Phase 1 collected to avoid duplicates in Phase 2
+PHASE1_COLLECTED = set()   # containers fully collected from node
+PHASE1_ROTATIONS = set()   # containers where rotation was detected
+
 if LAST_EPOCH == 0:
     print("[LogNest] First run: collecting ALL logs")
 else:
@@ -121,6 +125,7 @@ def collect_container_from_node(container_dir, ns, pod, container):
     out_file = RUN_DIR / f"{ns}__{pod}__{container}__{TIMESTAMP}.log"
     writer = get_split_writer(out_file)
     collected = False
+    rotation_detected = False
 
     try:
         # 1. Rotated files (both .gz and plain)
@@ -133,6 +138,7 @@ def collect_container_from_node(container_dir, ns, pod, container):
             file_mtime = int(rot.stat().st_mtime)
             if file_mtime <= LAST_EPOCH:
                 continue
+            rotation_detected = True
             try:
                 if rot.suffix == '.gz':
                     with gzip.open(rot, 'rb') as gz:
@@ -166,6 +172,12 @@ def collect_container_from_node(container_dir, ns, pod, container):
             current_size = log_file.stat().st_size
             prev_offset = OFFSETS.get(file_key, 0)
 
+            # Detect rotation: file is smaller than our saved offset
+            if current_size < prev_offset:
+                rotation_detected = True
+                prev_offset = 0  # Reset — read from beginning of new file
+                print(f"[LogNest]   ├─ ROTATION detected: {log_file.name} (was {prev_offset}, now {current_size})")
+
             if current_size > prev_offset:
                 new_bytes = current_size - prev_offset
                 try:
@@ -197,6 +209,10 @@ def collect_container_from_node(container_dir, ns, pod, container):
     if collected and total > 0:
         parts = len(writer.files)
         print(f"[LogNest]   └─ ✓ {ns}/{pod}/{container} → {total} bytes ({parts} file{'s' if parts > 1 else ''})")
+        # Track that this container was fully collected from node
+        PHASE1_COLLECTED.add(f"{ns}__{pod}__{container}")
+        if rotation_detected:
+            PHASE1_ROTATIONS.add(f"{ns}__{pod}__{container}")
         return str(out_file)
     else:
         for f in writer.files:
@@ -267,24 +283,32 @@ def collect_from_api():
         since_flag = [f"--since={since_secs}s"]
 
     def collect_pod_api(ns, pod, container):
-        # Skip if already collected from node
-        node_file = RUN_DIR / f"{ns}__{pod}__{container}__{TIMESTAMP}.log"
-        if node_file.exists() and node_file.stat().st_size > 0:
+        container_key = f"{ns}__{pod}__{container}"
+
+        # Skip if Phase 1 already collected this container (and no rotation concern)
+        if container_key in PHASE1_COLLECTED and container_key not in PHASE1_ROTATIONS:
             return None
 
-        api_file = RUN_DIR / f"{ns}__{pod}__{container}__{TIMESTAMP}.log"
-        try:
-            cmd = ["kubectl", "logs", pod, "-n", ns, "-c", container,
-                   "--timestamps=true"] + since_flag
-            result = subprocess.run(cmd, capture_output=True, timeout=300)
-            if result.returncode == 0 and result.stdout:
-                api_file.write_bytes(result.stdout)
-                print(f"[LogNest]   └─ ✓ {ns}/{pod}/{container} → {len(result.stdout)} bytes (API)")
-                return str(api_file)
-        except Exception as e:
-            print(f"[LogNest]   ├─ WARN: {ns}/{pod}/{container}: {e}")
+        # If Phase 1 collected it WITH rotation, we still check --previous
+        # to catch any logs that were in a deleted rotated file
+        only_previous = container_key in PHASE1_COLLECTED
 
-        # Try --previous
+        api_file = RUN_DIR / f"{ns}__{pod}__{container}__{TIMESTAMP}.log"
+
+        if not only_previous:
+            # Collect current logs (only if Phase 1 didn't get them)
+            try:
+                cmd = ["kubectl", "logs", pod, "-n", ns, "-c", container,
+                       "--timestamps=true"] + since_flag
+                result = subprocess.run(cmd, capture_output=True, timeout=300)
+                if result.returncode == 0 and result.stdout:
+                    api_file.write_bytes(result.stdout)
+                    print(f"[LogNest]   └─ ✓ {ns}/{pod}/{container} → {len(result.stdout)} bytes (API)")
+                    return str(api_file)
+            except Exception as e:
+                print(f"[LogNest]   ├─ WARN: {ns}/{pod}/{container}: {e}")
+
+        # Always try --previous as safety net for rotated/deleted logs
         prev_file = RUN_DIR / f"{ns}__{pod}__{container}__{TIMESTAMP}.previous.log"
         try:
             cmd = ["kubectl", "logs", pod, "-n", ns, "-c", container,
