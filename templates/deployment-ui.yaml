@@ -85,6 +85,9 @@ spec:
             - name: configmap
               mountPath: /configmap
               readOnly: true
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
             - name: app
               mountPath: /app
             - name: data
@@ -93,6 +96,9 @@ spec:
         - name: configmap
           configMap:
             name: {{ include "lognest.fullname" . }}-ui
+        - name: scripts
+          configMap:
+            name: {{ include "lognest.fullname" . }}-collector-script
         - name: app
           emptyDir: {}
         - name: data

@@ -448,6 +448,21 @@ if __name__ == "__main__":
     save_last_epoch()
 
     compress_run()
+    
+    # Index this run in SQLite for instant UI queries
+    try:
+        sys.path.insert(0, "/scripts")
+        from index_db import init_db, index_run, index_archive
+        init_db()
+        if RUN_DIR.exists() and any(RUN_DIR.glob("*.log")):
+            index_run(TIMESTAMP, str(RUN_DIR), TIMESTAMP)
+            print(f"[LogNest] Indexed run in SQLite")
+        zip_file = ZIP_DIR / f"lognest_{TIMESTAMP}.tar.gz"
+        if zip_file.exists():
+            index_archive(zip_file.name, zip_file.stat().st_size)
+    except Exception as e:
+        print(f"[LogNest] WARN: indexing failed: {e}")
+
     cleanup_capacity()
     cleanup_retention()
 

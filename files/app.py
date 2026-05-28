@@ -24,7 +24,25 @@ ZIP_DIR  = Path(os.environ.get("ZIP_DIR",  "/data/logs_zip"))
 _cache = {"runs": None, "runs_ts": 0, "zips": None, "zips_ts": 0}
 CACHE_TTL = 60  # seconds
 
+# Try to use SQLite index for instant queries
+_use_index = False
+try:
+    import sys as _sys
+    _sys.path.insert(0, "/scripts")
+    from index_db import init_db, query_runs, query_run_count, query_files, query_stats, query_archives
+    init_db()
+    _use_index = True
+except Exception:
+    pass
+
 def get_runs():
+    if _use_index:
+        try:
+            rows = query_runs(limit=200)
+            return [r["name"] for r in rows]
+        except Exception:
+            pass
+    # Fallback to NFS scan (cached)
     now = _time.time()
     if _cache["runs"] is not None and (now - _cache["runs_ts"]) < CACHE_TTL:
         return _cache["runs"]
@@ -86,31 +104,34 @@ def _human_size(size):
 _stats_cache = {"data": None, "ts": 0}
 
 def get_stats():
-    # Cache stats for 60 seconds to avoid scanning NFS on every page load
     now = _time.time()
-    if _stats_cache["data"] and (now - _stats_cache["ts"]) < 60:
+    if _stats_cache["data"] and (now - _stats_cache["ts"]) < CACHE_TTL:
         return _stats_cache["data"]
 
+    if _use_index:
+        try:
+            s = query_stats()
+            result = {
+                "runs": s["runs"],
+                "files": s["files"],
+                "zips": s["zips"],
+                "storage": _human_size(s["storage_bytes"]),
+                "last_run": s["last_run"],
+            }
+            _stats_cache["data"] = result
+            _stats_cache["ts"] = now
+            return result
+        except Exception:
+            pass
+
+    # Fallback
     runs = get_runs()
-    total_files = 0
-    for r in runs[:20]:  # Only count files in last 20 runs for speed
-        rd = LOGS_DIR / r
-        if rd.is_dir():
-            total_files += len(list(rd.glob("*.log")))
-
-    zips = list(get_zips())
-    # Estimate total storage from zip sizes (fast — fewer files)
-    storage = sum(z.stat().st_size for z in zips) if zips else 0
-    # Add rough estimate for logs (2x zip size is typical)
-    storage = storage * 3 if storage else 0
-
-    last_run = runs[0] if runs else "Never"
     result = {
         "runs": len(runs),
-        "files": total_files,
-        "zips": len(zips),
-        "storage": _human_size(storage),
-        "last_run": last_run,
+        "files": 0,
+        "zips": 0,
+        "storage": "—",
+        "last_run": runs[0] if runs else "Never",
     }
     _stats_cache["data"] = result
     _stats_cache["ts"] = now

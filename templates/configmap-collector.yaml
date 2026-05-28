@@ -12,3 +12,5 @@ metadata:
 data:
   collect.py: |
 {{ .Files.Get "files/collect.py" | indent 4 }}
+  index_db.py: |
+{{ .Files.Get "files/index_db.py" | indent 4 }}
