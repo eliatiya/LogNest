@@ -2,7 +2,7 @@
 """
 LogNest Web UI — Production Ready
 """
-import os, re, io, zipfile, html as _html, json as _json
+import os, re, io, zipfile, html as _html, json as _json, time as _time
 from pathlib import Path
 from datetime import datetime
 from flask import Flask, render_template_string, send_file, request, abort, jsonify, Response
@@ -21,10 +21,19 @@ LOGS_DIR = Path(os.environ.get("LOGS_DIR", "/data/logs"))
 ZIP_DIR  = Path(os.environ.get("ZIP_DIR",  "/data/logs_zip"))
 
 # ------------------------------------------------------------------ helpers
+_cache = {"runs": None, "runs_ts": 0, "zips": None, "zips_ts": 0}
+CACHE_TTL = 60  # seconds
+
 def get_runs():
+    now = _time.time()
+    if _cache["runs"] is not None and (now - _cache["runs_ts"]) < CACHE_TTL:
+        return _cache["runs"]
     if not LOGS_DIR.exists():
         return []
-    return sorted([d.name for d in LOGS_DIR.iterdir() if d.is_dir()], reverse=True)
+    result = sorted([d.name for d in LOGS_DIR.iterdir() if d.is_dir()], reverse=True)
+    _cache["runs"] = result
+    _cache["runs_ts"] = now
+    return result
 
 def get_log_files(run=None):
     base = LOGS_DIR / run if run else LOGS_DIR
@@ -33,9 +42,15 @@ def get_log_files(run=None):
     return sorted(base.rglob("*.log"), key=lambda p: p.name)
 
 def get_zips():
+    now = _time.time()
+    if _cache["zips"] is not None and (now - _cache["zips_ts"]) < CACHE_TTL:
+        return _cache["zips"]
     if not ZIP_DIR.exists():
         return []
-    return sorted(ZIP_DIR.glob("*.tar.gz"), key=lambda p: p.name, reverse=True)
+    result = sorted(ZIP_DIR.glob("*.tar.gz"), key=lambda p: p.name, reverse=True)
+    _cache["zips"] = result
+    _cache["zips_ts"] = now
+    return result
 
 LEVEL_PATTERNS = {
     "error":   re.compile(r'\berror\b',      re.IGNORECASE),
@@ -60,7 +75,6 @@ def _human_size(size):
     return f"{size:.1f} TB"
 
 # ------------------------------------------------------------------ stats
-import time as _time
 _stats_cache = {"data": None, "ts": 0}
 
 def get_stats():
