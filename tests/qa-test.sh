@@ -70,7 +70,16 @@ sleep 15
 kubectl delete ns "$NAMESPACE" --ignore-not-found --wait=false 2>/dev/null
 kubectl delete clusterrole lognest-collector lognest-pv-cleanup --ignore-not-found 2>/dev/null
 kubectl delete clusterrolebinding lognest-collector lognest-pv-cleanup --ignore-not-found 2>/dev/null
-sleep 20
+
+# Wait for namespace to fully terminate
+log_info "Waiting for namespace to terminate..."
+for i in $(seq 1 30); do
+    if ! kubectl get ns "$NAMESPACE" &>/dev/null; then
+        break
+    fi
+    sleep 5
+done
+sleep 10
 
 [ -d "$NFS_PATH" ] && rm -f "$NFS_PATH/.lognest_last_collect" "$NFS_PATH/.lognest_offsets" 2>/dev/null
 
