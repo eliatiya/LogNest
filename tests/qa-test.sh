@@ -304,8 +304,12 @@ else
     record_result "API stats valid JSON" "FAIL" "$API_JSON"
 fi
 
-# Test: 404 for non-existent file
-NOT_FOUND=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:18080/download/log/fake-run/fake-file.log" 2>/dev/null)
+# Test: 404 for non-existent file (re-establish port-forward)
+kill $PF_PID 2>/dev/null
+kubectl port-forward svc/lognest-ui 18080:8080 -n "$NAMESPACE" &>/dev/null &
+PF_PID=$!
+sleep 5
+NOT_FOUND=$(curl -s -o /dev/null -w "%{http_code}" --max-time 10 "http://localhost:18080/download/log/fake-run/fake-file.log" 2>/dev/null)
 [ "$NOT_FOUND" = "404" ] && record_result "404 for missing file" "PASS" "" || record_result "404 for missing file" "FAIL" "HTTP $NOT_FOUND"
 
 # Test: Collector logs show both phases (use qa-r2 which just ran)

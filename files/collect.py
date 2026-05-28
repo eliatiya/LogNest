@@ -217,6 +217,9 @@ def collect_container_from_node(container_dir, ns, pod, container):
     else:
         for f in writer.files:
             f.unlink(missing_ok=True)
+        # Even if no new data, mark as "seen" so Phase 2 doesn't re-collect
+        # (the container exists on this node, Phase 1 checked it, nothing new)
+        PHASE1_COLLECTED.add(f"{ns}__{pod}__{container}")
         return None
 
 
