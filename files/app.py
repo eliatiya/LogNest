@@ -670,15 +670,11 @@ def dashboard():
       <div class="stat-card"><div class="val" style="font-size:1rem">{stats['last_run']}</div><div class="lbl">Last Run</div></div>
     </div>"""
 
-    # run selector — show 30 by default, all if requested
-    show_all_runs = request.args.get("all_runs", "") == "1"
-    display_runs = runs if show_all_runs else runs[:30]
+    # run selector — always show all runs (SQLite makes this instant)
     run_opts = "".join(
         f'<option value="{r}" {"selected" if r==sel_run else ""}>{r}</option>'
-        for r in display_runs
+        for r in runs
     )
-    if not show_all_runs and len(runs) > 30:
-        run_opts += f'<option value="" disabled>── {len(runs)-30} more ──</option>'
 
     # pod selector
     pod_opts = "".join(
@@ -720,7 +716,6 @@ def dashboard():
                 ">
                 <option value="">— Select run —</option>{run_opts}
               </select>
-              {"<a href='/?all_runs=1' style='font-size:.72rem;color:var(--accent);margin-top:4px;display:block'>Show all " + str(len(runs)) + " runs</a>" if not show_all_runs and len(runs) > 30 else ""}
             </div>
             {pod_field}
             {"<input type='hidden' name='q' value='" + _html.escape(search) + "'/>" if search else ""}
