@@ -38,7 +38,7 @@ except Exception:
 def get_runs():
     if _use_index:
         try:
-            rows = query_runs(limit=200)
+            rows = query_runs(limit=9999)
             return [r["name"] for r in rows]
         except Exception:
             pass
@@ -690,13 +690,13 @@ def dashboard():
     )
 
     pod_field = f"""
-      <div class="field">
+      <div class="field" style="flex:1;min-width:250px">
         <label>Pod / Container</label>
         <select name="pod" id="pod-sel" onchange="this.form.submit()">
           <option value="">— Select pod —</option>{pod_opts}
         </select>
       </div>
-      <div class="field" style="min-width:140px">
+      <div class="field" style="min-width:120px">
         <label>Level</label>
         <select name="level" onchange="this.form.submit()">{level_opts}</select>
       </div>""" if sel_run else ""
@@ -705,8 +705,8 @@ def dashboard():
     <div class="card">
       <div class="card-body">
         <form method="get" action="/" id="filter-form">
-          <div class="controls">
-            <div class="field">
+          <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+            <div class="field" style="min-width:200px">
               <label>Collection Run</label>
               <select name="run" id="run-sel"
                 onchange="
