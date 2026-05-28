@@ -39,7 +39,15 @@ def get_log_files(run=None):
     base = LOGS_DIR / run if run else LOGS_DIR
     if not base.exists():
         return []
-    return sorted(base.rglob("*.log"), key=lambda p: p.name)
+    # Cache per-run file list for 60s
+    cache_key = f"files_{run}"
+    now = _time.time()
+    if cache_key in _cache and (now - _cache.get(f"{cache_key}_ts", 0)) < CACHE_TTL:
+        return _cache[cache_key]
+    result = sorted(base.glob("*.log"), key=lambda p: p.name)
+    _cache[cache_key] = result
+    _cache[f"{cache_key}_ts"] = now
+    return result
 
 def get_zips():
     now = _time.time()
@@ -655,10 +663,11 @@ def dashboard():
       <div class="stat-card"><div class="val" style="font-size:1rem">{stats['last_run']}</div><div class="lbl">Last Run</div></div>
     </div>"""
 
-    # run selector
+    # run selector (limit to last 30 for speed)
+    display_runs = runs[:30]
     run_opts = "".join(
         f'<option value="{r}" {"selected" if r==sel_run else ""}>{r}</option>'
-        for r in runs
+        for r in display_runs
     )
 
     # pod selector
