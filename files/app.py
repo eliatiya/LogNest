@@ -606,21 +606,42 @@ def dashboard():
         if sel_pod:
             target = LOGS_DIR / sel_run / sel_pod
             if target.exists():
-                raw = target.read_text(errors="replace")
-                filtered = filter_lines(raw, level)
-                if search:
-                    filtered = "\n".join(
-                        l for l in filtered.splitlines()
-                        if search.lower() in l.lower()
-                    )
-                log_content = filtered
-                # count levels in raw
-                for line in raw.splitlines():
+                # Read only last 2000 lines for speed
+                raw_bytes = target.stat().st_size
+                MAX_DISPLAY = 2000
+                if raw_bytes > 500_000:  # >500KB — read only tail
+                    with open(target, 'rb') as fh:
+                        # Seek to approximate position for last 2000 lines
+                        fh.seek(max(0, raw_bytes - 300_000))
+                        fh.readline()  # skip partial line
+                        raw = fh.read().decode('utf-8', errors='replace')
+                else:
+                    raw = target.read_text(errors='replace')
+
+                lines = raw.splitlines()
+                # Quick level counts (sample first 5000 lines max)
+                sample = lines[:5000]
+                for line in sample:
                     ll = line.lower()
-                    if re.search(r'\berror\b', ll): error_count += 1
-                    elif re.search(r'\bwarn', ll):  warn_count  += 1
-                    elif re.search(r'\binfo\b', ll): info_count += 1
-                    elif re.search(r'\bdebug\b', ll): debug_count += 1
+                    if 'error' in ll: error_count += 1
+                    elif 'warn' in ll: warn_count += 1
+                    elif 'info' in ll: info_count += 1
+                    elif 'debug' in ll: debug_count += 1
+
+                # Apply filters
+                if level and level != "all":
+                    pat = LEVEL_PATTERNS.get(level)
+                    if pat:
+                        lines = [l for l in lines if pat.search(l)]
+                if search:
+                    sl = search.lower()
+                    lines = [l for l in lines if sl in l.lower()]
+
+                # Limit to last MAX_DISPLAY lines
+                total_lines = len(lines)
+                if total_lines > MAX_DISPLAY:
+                    lines = lines[-MAX_DISPLAY:]
+                log_content = "\n".join(lines)
             else:
                 abort(404)
 
@@ -692,18 +713,8 @@ def dashboard():
     if log_content is not None:
         lines = log_content.splitlines()
         line_count = len(lines)
-        # build colored lines
-        colored = []
-        for line in lines:
-            esc = _html.escape(line)
-            ll = line.lower()
-            if re.search(r'\berror\b', ll):   cls = "log-error"
-            elif re.search(r'\bwarn', ll):    cls = "log-warn"
-            elif re.search(r'\bdebug\b', ll): cls = "log-debug"
-            elif re.search(r'\binfo\b', ll):  cls = "log-info"
-            else:                             cls = "log-ts"
-            colored.append(f'<span class="log-line {cls}">{esc}</span>')
-        log_html = "\n".join(colored)
+        # Send raw escaped text — coloring done client-side for speed
+        log_html = _html.escape(log_content)
 
         viewer = f"""
         <div class="card">
@@ -731,6 +742,22 @@ def dashboard():
             </a>
           </div>
           <pre id="logview">{log_html}</pre>
+          <script>
+          (function(){{
+            var pre=document.getElementById('logview');
+            var lines=pre.innerHTML.split('\\n');
+            var out=[];
+            for(var i=0;i<lines.length;i++){{
+              var l=lines[i],cls='log-ts',lo=l.toLowerCase();
+              if(/\\berror\\b/.test(lo))cls='log-error';
+              else if(/\\bwarn/.test(lo))cls='log-warn';
+              else if(/\\bdebug\\b/.test(lo))cls='log-debug';
+              else if(/\\binfo\\b/.test(lo))cls='log-info';
+              out.push('<span class="log-line '+cls+'">'+l+'</span>');
+            }}
+            pre.innerHTML=out.join('\\n');
+          }})();
+          </script>
           <div style="padding:8px 16px;background:var(--bg);border-top:1px solid var(--border);font-size:.72rem;color:var(--text-mute);display:flex;justify-content:space-between">
             <span>{line_count:,} lines shown</span>
             <span>{"Filtered by: " + level if level != "all" else "All levels"}{" · Search: " + _html.escape(search) if search else ""}</span>
