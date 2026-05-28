@@ -40,17 +40,8 @@ spec:
             - sh
             - -c
             - |
-              set -e
               cp /configmap/app.py /app/app.py
-              pip install --quiet --no-cache-dir flask==3.0.3 gunicorn==22.0.0 kubernetes==29.0.0
-              cd /app && exec python -m gunicorn \
-                --workers 2 \
-                --bind 0.0.0.0:8080 \
-                --timeout 120 \
-                --access-logfile /dev/null \
-                --error-logfile - \
-                --log-level warning \
-                app:app
+              exec gunicorn --workers 2 --bind 0.0.0.0:8080 --timeout 120 --access-logfile /dev/null --error-logfile - --log-level warning app:app
           ports:
             - name: http
               containerPort: 8080
@@ -76,14 +67,14 @@ spec:
             httpGet:
               path: /
               port: http
-            initialDelaySeconds: 60
+            initialDelaySeconds: 10
             periodSeconds: 30
             failureThreshold: 3
           readinessProbe:
             httpGet:
               path: /
               port: http
-            initialDelaySeconds: 45
+            initialDelaySeconds: 5
             periodSeconds: 10
           resources:
             {{- toYaml .Values.ui.resources | nindent 12 }}

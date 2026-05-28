@@ -1,0 +1,16 @@
+FROM python:3.11-slim
+
+# Install all dependencies at build time — no internet needed at runtime
+RUN pip install --no-cache-dir \
+    flask==3.0.3 \
+    gunicorn==22.0.0 \
+    kubernetes==29.0.0
+
+WORKDIR /app
+
+# App is mounted via ConfigMap at runtime, but include a default copy
+COPY files/app.py /app/app.py
+
+EXPOSE 8080
+
+CMD ["gunicorn", "--workers", "2", "--bind", "0.0.0.0:8080", "--timeout", "120", "--access-logfile", "/dev/null", "--error-logfile", "-", "--log-level", "warning", "app:app"]
