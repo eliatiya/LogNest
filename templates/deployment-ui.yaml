@@ -41,7 +41,7 @@ spec:
             - -c
             - |
               cp /configmap/app.py /app/app.py
-              exec gunicorn --workers 2 --bind 0.0.0.0:8080 --timeout 120 --access-logfile /dev/null --error-logfile - --log-level warning app:app
+              cd /app && exec gunicorn --workers 2 --bind 0.0.0.0:8080 --timeout 120 --access-logfile /dev/null --error-logfile - --log-level warning app:app
           ports:
             - name: http
               containerPort: 8080
