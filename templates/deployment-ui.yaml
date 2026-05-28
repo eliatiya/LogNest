@@ -41,7 +41,7 @@ spec:
             - -c
             - |
               cp /configmap/app.py /app/app.py
-              cd /app && exec gunicorn --workers 2 --bind 0.0.0.0:8080 --timeout 120 --access-logfile /dev/null --error-logfile - --log-level warning app:app
+              exec gunicorn --workers 2 --bind 0.0.0.0:8080 --timeout 300 --access-logfile /dev/null --error-logfile - --log-level warning --chdir /app app:app
           ports:
             - name: http
               containerPort: 8080
@@ -65,17 +65,17 @@ spec:
               value: {{ .Values.storage.pvc.name }}
           livenessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
-            initialDelaySeconds: 30
+            initialDelaySeconds: 15
             periodSeconds: 30
             timeoutSeconds: 5
             failureThreshold: 5
           readinessProbe:
             httpGet:
-              path: /
+              path: /healthz
               port: http
-            initialDelaySeconds: 15
+            initialDelaySeconds: 10
             periodSeconds: 10
             timeoutSeconds: 5
             failureThreshold: 10

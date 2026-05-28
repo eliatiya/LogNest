@@ -987,6 +987,10 @@ def download_multi():
 
 
 # ------------------------------------------------------------------ API
+@app.route("/healthz")
+def healthz():
+    return "ok"
+
 @app.route("/api/stats")
 def api_stats():
     return jsonify(get_stats())
