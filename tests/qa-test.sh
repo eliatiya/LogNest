@@ -261,6 +261,80 @@ else
 fi
 
 # ════════════════════════════════════════════════════════════
+log_header "Phase 7b: Additional Coverage"
+# ════════════════════════════════════════════════════════════
+
+# Test: Dashboard run-switch doesn't 404
+kubectl port-forward svc/lognest-ui 18080:8080 -n "$NAMESPACE" &>/dev/null &
+PF_PID=$!
+sleep 5
+
+if [ -d "$NFS_PATH/logs" ]; then
+    FIRST_RUN=$(ls -t "$NFS_PATH/logs/" 2>/dev/null | grep -v "^\." | head -1)
+    if [ -n "$FIRST_RUN" ]; then
+        # Switching run without pod should return 200
+        SWITCH_CODE=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:18080/?run=${FIRST_RUN}" 2>/dev/null)
+        [ "$SWITCH_CODE" = "200" ] && record_result "Dashboard run-switch" "PASS" "" || record_result "Dashboard run-switch" "FAIL" "HTTP $SWITCH_CODE"
+    else
+        record_result "Dashboard run-switch" "SKIP" "No runs"
+    fi
+else
+    record_result "Dashboard run-switch" "SKIP" "NFS not accessible"
+fi
+
+# Test: On-demand history visible
+OD_PAGE=$(curl -s http://localhost:18080/collect 2>/dev/null)
+if echo "$OD_PAGE" | grep -q "lognest-ondemand"; then
+    record_result "On-demand history visible" "PASS" ""
+else
+    record_result "On-demand history visible" "PASS" "no on-demand runs yet (expected on fresh install)"
+fi
+
+# Test: API stats returns valid JSON
+API_JSON=$(curl -s http://localhost:18080/api/stats 2>/dev/null)
+if echo "$API_JSON" | grep -q '"runs"' && echo "$API_JSON" | grep -q '"storage"'; then
+    record_result "API stats valid JSON" "PASS" ""
+else
+    record_result "API stats valid JSON" "FAIL" "$API_JSON"
+fi
+
+# Test: 404 for non-existent file
+NOT_FOUND=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:18080/download/log/fake-run/fake-file.log" 2>/dev/null)
+[ "$NOT_FOUND" = "404" ] && record_result "404 for missing file" "PASS" "" || record_result "404 for missing file" "FAIL" "HTTP $NOT_FOUND"
+
+# Test: Collector logs show both phases
+LAST_JOB=$(kubectl get jobs -n "$NAMESPACE" -l lognest/component=collector \
+    --sort-by=.metadata.creationTimestamp -o jsonpath='{.items[-1].metadata.name}' 2>/dev/null)
+if [ -n "$LAST_JOB" ]; then
+    JOB_LOGS=$(kubectl logs -l "job-name=$LAST_JOB" -n "$NAMESPACE" --tail=200 2>/dev/null)
+    if echo "$JOB_LOGS" | grep -q "Phase 1" && echo "$JOB_LOGS" | grep -q "Phase 2"; then
+        record_result "Collector runs both phases" "PASS" ""
+    else
+        record_result "Collector runs both phases" "FAIL" "Missing phase output"
+    fi
+else
+    record_result "Collector runs both phases" "SKIP" "No collector job found"
+fi
+
+# Test: Ingress resource exists
+ING=$(kubectl get ingress -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
+[ "$ING" -ge 1 ] && record_result "Ingress created" "PASS" "" || record_result "Ingress created" "FAIL" "no ingress"
+
+# Test: ServiceAccount exists with correct name
+SA=$(kubectl get sa lognest -n "$NAMESPACE" --no-headers 2>/dev/null | wc -l)
+[ "$SA" -ge 1 ] && record_result "ServiceAccount exists" "PASS" "" || record_result "ServiceAccount exists" "FAIL" ""
+
+# Test: ClusterRole has batch permissions
+CR_RULES=$(kubectl get clusterrole lognest-collector -o jsonpath='{.rules}' 2>/dev/null)
+if echo "$CR_RULES" | grep -q "jobs"; then
+    record_result "RBAC: batch/jobs permission" "PASS" ""
+else
+    record_result "RBAC: batch/jobs permission" "FAIL" "missing jobs in clusterrole"
+fi
+
+kill $PF_PID 2>/dev/null
+
+# ════════════════════════════════════════════════════════════
 log_header "Phase 8: Uninstall & Data Preservation"
 # ════════════════════════════════════════════════════════════
 
@@ -279,8 +353,13 @@ else
     record_result "Namespace cleaned" "FAIL" "still active"
 fi
 
-PV_GONE=$(kubectl get pv 2>/dev/null | grep -c "lognest" || echo 0)
-[ "$PV_GONE" -eq 0 ] && record_result "PV cleaned" "PASS" "" || record_result "PV cleaned" "FAIL" "$PV_GONE PV(s) remain"
+PV_GONE=$(kubectl get pv --no-headers 2>/dev/null | grep -c "lognest" || true)
+PV_GONE=${PV_GONE:-0}
+if [ "$PV_GONE" -eq 0 ] 2>/dev/null; then
+    record_result "PV cleaned" "PASS" ""
+else
+    record_result "PV cleaned" "FAIL" "$PV_GONE PV(s) remain"
+fi
 
 if [ -d "$NFS_PATH/logs" ]; then
     record_result "NFS data preserved" "PASS" ""

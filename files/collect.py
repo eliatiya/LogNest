@@ -289,6 +289,11 @@ def collect_from_api():
         if container_key in PHASE1_COLLECTED and container_key not in PHASE1_ROTATIONS:
             return None
 
+        # Also skip if output file already exists from Phase 1 (file-based check)
+        existing_file = RUN_DIR / f"{ns}__{pod}__{container}__{TIMESTAMP}.log"
+        if existing_file.exists() and existing_file.stat().st_size > 0:
+            return None
+
         # If Phase 1 collected it WITH rotation, we still check --previous
         # to catch any logs that were in a deleted rotated file
         only_previous = container_key in PHASE1_COLLECTED
