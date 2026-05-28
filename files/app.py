@@ -614,22 +614,12 @@ def dashboard():
         if sel_pod:
             target = LOGS_DIR / sel_run / sel_pod
             if target.exists():
-                # Read only last 2000 lines for speed
-                raw_bytes = target.stat().st_size
-                MAX_DISPLAY = 2000
-                if raw_bytes > 500_000:  # >500KB — read only tail
-                    with open(target, 'rb') as fh:
-                        # Seek to approximate position for last 2000 lines
-                        fh.seek(max(0, raw_bytes - 300_000))
-                        fh.readline()  # skip partial line
-                        raw = fh.read().decode('utf-8', errors='replace')
-                else:
-                    raw = target.read_text(errors='replace')
-
+                # Always read the full file
+                raw = target.read_text(errors='replace')
                 lines = raw.splitlines()
-                # Quick level counts (sample first 5000 lines max)
-                sample = lines[:5000]
-                for line in sample:
+
+                # Quick level counts
+                for line in lines[:5000]:
                     ll = line.lower()
                     if 'error' in ll: error_count += 1
                     elif 'warn' in ll: warn_count += 1
@@ -645,10 +635,6 @@ def dashboard():
                     sl = search.lower()
                     lines = [l for l in lines if sl in l.lower()]
 
-                # Limit to last MAX_DISPLAY lines
-                total_lines = len(lines)
-                if total_lines > MAX_DISPLAY:
-                    lines = lines[-MAX_DISPLAY:]
                 log_content = "\n".join(lines)
             else:
                 abort(404)
@@ -663,12 +649,15 @@ def dashboard():
       <div class="stat-card"><div class="val" style="font-size:1rem">{stats['last_run']}</div><div class="lbl">Last Run</div></div>
     </div>"""
 
-    # run selector (limit to last 30 for speed)
-    display_runs = runs[:30]
+    # run selector — show 30 by default, all if requested
+    show_all_runs = request.args.get("all_runs", "") == "1"
+    display_runs = runs if show_all_runs else runs[:30]
     run_opts = "".join(
         f'<option value="{r}" {"selected" if r==sel_run else ""}>{r}</option>'
         for r in display_runs
     )
+    if not show_all_runs and len(runs) > 30:
+        run_opts += f'<option value="" disabled>── {len(runs)-30} more ──</option>'
 
     # pod selector
     pod_opts = "".join(
@@ -710,6 +699,7 @@ def dashboard():
                 ">
                 <option value="">— Select run —</option>{run_opts}
               </select>
+              {"<a href='/?all_runs=1' style='font-size:.72rem;color:var(--accent);margin-top:4px;display:block'>Show all " + str(len(runs)) + " runs</a>" if not show_all_runs and len(runs) > 30 else ""}
             </div>
             {pod_field}
             {"<input type='hidden' name='q' value='" + _html.escape(search) + "'/>" if search else ""}
