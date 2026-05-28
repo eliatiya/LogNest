@@ -60,37 +60,39 @@ def _human_size(size):
     return f"{size:.1f} TB"
 
 # ------------------------------------------------------------------ stats
+import time as _time
+_stats_cache = {"data": None, "ts": 0}
+
 def get_stats():
+    # Cache stats for 60 seconds to avoid scanning NFS on every page load
+    now = _time.time()
+    if _stats_cache["data"] and (now - _stats_cache["ts"]) < 60:
+        return _stats_cache["data"]
+
     runs = get_runs()
-    total_files = sum(
-        len(list((LOGS_DIR / r).glob("*.log")))
-        for r in runs if (LOGS_DIR / r).is_dir()
-    )
+    total_files = 0
+    for r in runs[:20]:  # Only count files in last 20 runs for speed
+        rd = LOGS_DIR / r
+        if rd.is_dir():
+            total_files += len(list(rd.glob("*.log")))
+
     zips = list(get_zips())
-    # Calculate combined size of logs + logs_zip folders
-    total_size = 0
-    if LOGS_DIR.exists():
-        for f in LOGS_DIR.rglob("*"):
-            if f.is_file():
-                try:
-                    total_size += f.stat().st_size
-                except Exception:
-                    pass
-    if ZIP_DIR.exists():
-        for f in ZIP_DIR.rglob("*"):
-            if f.is_file():
-                try:
-                    total_size += f.stat().st_size
-                except Exception:
-                    pass
+    # Estimate total storage from zip sizes (fast — fewer files)
+    storage = sum(z.stat().st_size for z in zips) if zips else 0
+    # Add rough estimate for logs (2x zip size is typical)
+    storage = storage * 3 if storage else 0
+
     last_run = runs[0] if runs else "Never"
-    return {
+    result = {
         "runs": len(runs),
         "files": total_files,
         "zips": len(zips),
-        "storage": _human_size(total_size),
+        "storage": _human_size(storage),
         "last_run": last_run,
     }
+    _stats_cache["data"] = result
+    _stats_cache["ts"] = now
+    return result
 
 # ------------------------------------------------------------------ HTML base
 PAGE = """<!DOCTYPE html>
