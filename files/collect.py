@@ -423,19 +423,36 @@ def cleanup_capacity():
 
 
 def cleanup_retention():
-    """Delete runs older than RETENTION_MONTHS."""
+    """Delete runs older than RETENTION_MONTHS — gradually, max 1 oldest per run."""
     cutoff = NOW_EPOCH - (RETENTION_MONTHS * 30 * 86400)
+    expired = []
     for d in LOGS_DIR.iterdir():
-        if not d.is_dir():
+        if not d.is_dir() or d.name.startswith("."):
             continue
         try:
             mtime = int(d.stat().st_mtime)
             if mtime < cutoff:
-                print(f"[LogNest] Retention: deleting {d.name}")
-                shutil.rmtree(d, ignore_errors=True)
-                (ZIP_DIR / f"lognest_{d.name}.tar.gz").unlink(missing_ok=True)
+                expired.append((mtime, d))
         except Exception:
             continue
+
+    if not expired:
+        return
+
+    # Sort by age (oldest first) and delete only the oldest one
+    expired.sort(key=lambda x: x[0])
+    oldest = expired[0][1]
+    print(f"[LogNest] Retention: deleting oldest expired run {oldest.name} (1 of {len(expired)} expired)")
+    shutil.rmtree(oldest, ignore_errors=True)
+    (ZIP_DIR / f"lognest_{oldest.name}.tar.gz").unlink(missing_ok=True)
+
+    # Also remove from SQLite index
+    try:
+        sys.path.insert(0, "/scripts")
+        from index_db import remove_run
+        remove_run(oldest.name)
+    except Exception:
+        pass
 
 
 # ── Main ──
