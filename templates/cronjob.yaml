@@ -23,7 +23,7 @@ spec:
       # Retry up to 3 times if pod fails to start (scheduling, mount issues)
       backoffLimit: 3
       activeDeadlineSeconds: 7200
-      ttlSecondsAfterFinished: 3600
+      ttlSecondsAfterFinished: 86400
       template:
         metadata:
           labels:
