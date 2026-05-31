@@ -809,12 +809,29 @@ def dashboard():
         for r in runs
     )
 
-    # pod selector
+    # pod selector — filter by namespace if selected
+    sel_ns = request.args.get("ns", "")
+    
+    # Get unique namespaces from this run's files
+    ns_in_run = sorted(set(
+        f.name.split("__")[0] for f in log_files if "__" in f.name
+    )) if log_files else []
+    
+    # Filter pods by namespace
+    filtered_log_files = log_files
+    if sel_ns and log_files:
+        filtered_log_files = [f for f in log_files if f.name.startswith(sel_ns + "__")]
+    
     pod_opts = "".join(
         f'<option value="{f.name}" {"selected" if f.name==sel_pod else ""}>'
         f'{f.name.replace(".log","")}</option>'
-        for f in log_files
+        for f in filtered_log_files
     ) if sel_run else ""
+
+    ns_opts_dash = "".join(
+        f'<option value="{_html.escape(n)}" {"selected" if n==sel_ns else ""}>{_html.escape(n)}</option>'
+        for n in ns_in_run
+    )
 
     level_opts = "".join(
         f'<option value="{v}" {"selected" if v==level else ""}>{l}</option>'
@@ -822,7 +839,16 @@ def dashboard():
                      ("warning","Warnings"),("info","Info"),("debug","Debug")]
     )
 
+    ns_field = f"""
+      <div class="field" style="min-width:150px">
+        <label>Namespace</label>
+        <select name="ns" onchange="this.form.submit()">
+          <option value="">All</option>{ns_opts_dash}
+        </select>
+      </div>""" if sel_run and ns_in_run else ""
+
     pod_field = f"""
+      {ns_field}
       <div class="field" style="flex:1;min-width:250px">
         <label>Pod / Container</label>
         <select name="pod" id="pod-sel" onchange="this.form.submit()">
@@ -1009,29 +1035,52 @@ def files():
     runs    = get_runs()
     sel_run = request.args.get("run", "")
     search  = request.args.get("q", "")
+    sel_ns  = request.args.get("ns", "")
 
     run_opts = "".join(
         f'<option value="{r}" {"selected" if r==sel_run else ""}>{r}</option>'
         for r in runs
     )
 
+    # Get namespaces for this run
+    ns_in_run = []
+    if sel_run:
+        raw_files = get_log_files(sel_run)
+        ns_in_run = sorted(set(
+            f.name.split("__")[0] for f in raw_files if "__" in f.name
+        ))
+
+    ns_opts_files = "".join(
+        f'<option value="{_html.escape(n)}" {"selected" if n==sel_ns else ""}>{_html.escape(n)}</option>'
+        for n in ns_in_run
+    )
+
+    ns_field = f"""
+            <div class="field" style="min-width:150px">
+              <label>Namespace</label>
+              <select name="ns" onchange="this.form.submit()">
+                <option value="">All</option>{ns_opts_files}
+              </select>
+            </div>""" if ns_in_run else ""
+
     controls = f"""
     <div class="card">
       <div class="card-body">
         <form method="get" action="/files">
-          <div class="controls">
-            <div class="field">
+          <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+            <div class="field" style="min-width:200px">
               <label>Collection Run</label>
               <select name="run" onchange="this.form.submit()">
                 <option value="">— Select run —</option>{run_opts}
               </select>
             </div>
-            <div class="field">
+            {ns_field}
+            <div class="field" style="flex:1;min-width:150px">
               <label>Search filename</label>
-              <input class="input" name="q" placeholder="e.g. production, coredns..."
+              <input class="input" name="q" placeholder="e.g. coredns, worker..."
                      value="{_html.escape(search)}" type="text"/>
             </div>
-            <div class="field" style="justify-content:flex-end;min-width:auto">
+            <div class="field" style="min-width:auto">
               <label>&nbsp;</label>
               <button class="btn" type="submit">Filter</button>
             </div>
@@ -1052,6 +1101,8 @@ def files():
                 self.container = parts[2] if len(parts) > 2 else "—"
 
         all_files = [FileInfo(f) for f in get_log_files(sel_run)]
+        if sel_ns:
+            all_files = [f for f in all_files if f.ns == sel_ns]
         if search:
             all_files = [f for f in all_files if search.lower() in f.name.lower()]
 
