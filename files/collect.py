@@ -129,35 +129,79 @@ def collect_container_from_node(container_dir, ns, pod, container):
 
     try:
         # 1. Rotated files (both .gz and plain)
+        # These are renamed versions of the old 0.log file.
+        # We may have already read part of it (via offset) before rotation.
         rotated = sorted([
             f for f in container_dir.iterdir()
             if f.name.startswith("0.log.") or (f.suffix == '.gz' and '.log.' in f.name)
         ], key=lambda f: f.name)
+
+        # Find the offset we had for the active log file (before it was rotated)
+        # The rotated file IS the old 0.log — so our saved offset tells us
+        # how much we already read from it.
+        active_log_path = container_dir / "0.log"
+        active_key = str(active_log_path)
+        prev_active_offset = OFFSETS.get(active_key, 0)
 
         for rot in rotated:
             file_mtime = int(rot.stat().st_mtime)
             if file_mtime <= LAST_EPOCH:
                 continue
             rotation_detected = True
+
+            # Determine how many bytes to skip (already collected before rotation)
+            # Only apply offset to the MOST RECENT rotated file (the one that was 0.log)
+            # Older rotated files should be read fully (they were rotated before our last run)
+            rot_size = rot.stat().st_size
+            skip_bytes = 0
+
+            # If this rotated file's mtime is close to our last run AND
+            # its size >= our saved offset, it's likely the file we were tracking
+            if prev_active_offset > 0 and rot_size >= prev_active_offset:
+                # Check if this is the most recent rotated file (closest to last run)
+                # by checking if it's the last in the sorted list with mtime > LAST_EPOCH
+                recent_rotated = [r for r in rotated if int(r.stat().st_mtime) > LAST_EPOCH]
+                if recent_rotated and rot == recent_rotated[-1]:
+                    skip_bytes = prev_active_offset
+                    # Clear the offset so we don't apply it again
+                    prev_active_offset = 0
+
             try:
                 if rot.suffix == '.gz':
                     with gzip.open(rot, 'rb') as gz:
+                        # Skip already-collected bytes
+                        skipped = 0
+                        while skipped < skip_bytes:
+                            to_skip = min(CHUNK_SIZE, skip_bytes - skipped)
+                            data = gz.read(to_skip)
+                            if not data:
+                                break
+                            skipped += len(data)
+                        # Read the rest (new data only)
                         while True:
                             chunk = gz.read(CHUNK_SIZE)
                             if not chunk:
                                 break
                             writer.write(chunk)
                             collected = True
-                    print(f"[LogNest]   ├─ Rotated (gz): {rot.name}")
+                    if skip_bytes > 0:
+                        print(f"[LogNest]   ├─ Rotated (gz): {rot.name} (skipped {skip_bytes} already-collected bytes)")
+                    else:
+                        print(f"[LogNest]   ├─ Rotated (gz): {rot.name}")
                 else:
                     with open(rot, 'rb') as fh:
+                        if skip_bytes > 0:
+                            fh.seek(skip_bytes)
                         while True:
                             chunk = fh.read(CHUNK_SIZE)
                             if not chunk:
                                 break
                             writer.write(chunk)
                             collected = True
-                    print(f"[LogNest]   ├─ Rotated (plain): {rot.name}")
+                    if skip_bytes > 0:
+                        print(f"[LogNest]   ├─ Rotated (plain): {rot.name} (skipped {skip_bytes} already-collected bytes)")
+                    else:
+                        print(f"[LogNest]   ├─ Rotated (plain): {rot.name}")
             except Exception as e:
                 print(f"[LogNest]   ├─ WARN: {rot.name}: {e}")
 
