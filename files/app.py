@@ -144,6 +144,7 @@ PAGE = """<!DOCTYPE html>
 <meta charset="UTF-8"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>LogNest{title_suffix}</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%234f8ef7' stroke-width='2'%3E%3Cpath d='M12 3C7 3 3 6 3 9c0 3 4 6 9 6s9-3 9-6c0-3-4-6-9-6z'/%3E%3Cpath d='M3 9v4c0 3 4 6 9 6s9-3 9-6V9'/%3E%3Cpath d='M3 13v4c0 3 4 6 9 6s9-3 9-6v-4'/%3E%3C/svg%3E"/>
 <style>
 :root{{
   --bg:        #0b0d14;
@@ -173,6 +174,32 @@ PAGE = """<!DOCTYPE html>
 html{{scroll-behavior:smooth}}
 body{{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;font-size:14px;line-height:1.5}}
 
+/* ── Animations ── */
+@keyframes fadeInUp{{
+  from{{opacity:0;transform:translateY(16px)}}
+  to{{opacity:1;transform:translateY(0)}}
+}}
+@keyframes fadeIn{{
+  from{{opacity:0}}
+  to{{opacity:1}}
+}}
+@keyframes slideUp{{
+  from{{transform:translateX(-50%) translateY(100px);opacity:0}}
+  to{{transform:translateX(-50%) translateY(0);opacity:1}}
+}}
+@keyframes countUp{{
+  from{{opacity:0;transform:translateY(8px)}}
+  to{{opacity:1;transform:translateY(0)}}
+}}
+@keyframes shimmer{{
+  0%{{background-position:-200% 0}}
+  100%{{background-position:200% 0}}
+}}
+@keyframes toastIn{{
+  from{{transform:translateY(80px) scale(.95);opacity:0}}
+  to{{transform:translateY(0) scale(1);opacity:1}}
+}}
+
 /* ── Scrollbar ── */
 ::-webkit-scrollbar{{width:6px;height:6px}}
 ::-webkit-scrollbar-track{{background:var(--bg)}}
@@ -186,7 +213,13 @@ body{{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:var(--bg);c
   padding:0 32px;
   display:flex;align-items:center;gap:0;
   height:56px;position:sticky;top:0;z-index:100;
-  backdrop-filter:blur(8px);
+  backdrop-filter:blur(12px);
+  box-shadow:0 1px 0 var(--border),0 4px 20px rgba(0,0,0,.3);
+}}
+.header::after{{
+  content:'';position:absolute;bottom:-1px;left:0;right:0;height:3px;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);
+  opacity:.3;pointer-events:none;
 }}
 .logo{{
   display:flex;align-items:center;gap:10px;
@@ -200,9 +233,9 @@ body{{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:var(--bg);c
   display:flex;align-items:center;gap:7px;
   padding:0 20px;color:var(--text-dim);text-decoration:none;
   border-bottom:2px solid transparent;font-size:.88rem;font-weight:500;
-  transition:color .15s,border-color .15s;white-space:nowrap;
+  transition:color .2s,border-color .2s,background .2s;white-space:nowrap;
 }}
-.nav a:hover{{color:var(--text)}}
+.nav a:hover{{color:var(--text);background:rgba(255,255,255,.02)}}
 .nav a.active{{color:var(--accent);border-bottom-color:var(--accent)}}
 .nav a svg{{opacity:.7}}
 .nav a.active svg{{opacity:1}}
@@ -220,8 +253,37 @@ body{{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:var(--bg);c
 .stat-card{{
   background:var(--surface);border:1px solid var(--border);
   border-radius:var(--radius-lg);padding:16px 20px;
+  position:relative;overflow:hidden;
+  transition:transform .2s ease,box-shadow .2s ease,border-color .3s ease;
+  animation:fadeInUp .5s ease both;
 }}
-.stat-card .val{{font-size:1.6rem;font-weight:700;color:var(--accent);line-height:1}}
+.stat-card:nth-child(1){{animation-delay:.05s}}
+.stat-card:nth-child(2){{animation-delay:.1s}}
+.stat-card:nth-child(3){{animation-delay:.15s}}
+.stat-card:nth-child(4){{animation-delay:.2s}}
+.stat-card:nth-child(5){{animation-delay:.25s}}
+.stat-card::before{{
+  content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,var(--accent),var(--purple),var(--accent));
+  background-size:200% 100%;
+  animation:shimmer 3s linear infinite;
+  opacity:.7;
+}}
+.stat-card::after{{
+  content:'';position:absolute;inset:0;border-radius:var(--radius-lg);
+  background:radial-gradient(ellipse at top,rgba(79,142,247,.04),transparent 70%);
+  pointer-events:none;
+}}
+.stat-card:hover{{
+  transform:translateY(-2px);
+  box-shadow:0 8px 24px rgba(79,142,247,.1),0 0 0 1px rgba(79,142,247,.15);
+  border-color:rgba(79,142,247,.3);
+}}
+.stat-card .val{{
+  font-size:1.6rem;font-weight:700;color:var(--accent);line-height:1;
+  animation:countUp .6s ease both;
+  animation-delay:.3s;
+}}
 .stat-card .lbl{{font-size:.72rem;color:var(--text-dim);margin-top:5px;text-transform:uppercase;letter-spacing:.5px}}
 .stat-card .sub{{font-size:.75rem;color:var(--text-mute);margin-top:3px}}
 
@@ -229,6 +291,13 @@ body{{font-family:'Inter','Segoe UI',system-ui,sans-serif;background:var(--bg);c
 .card{{
   background:var(--surface);border:1px solid var(--border);
   border-radius:var(--radius-lg);margin-bottom:20px;overflow:hidden;
+  transition:border-color .2s ease,box-shadow .2s ease;
+  animation:fadeInUp .5s ease both;
+  animation-delay:.1s;
+}}
+.card:hover{{
+  border-color:var(--border2);
+  box-shadow:0 4px 16px rgba(0,0,0,.2);
 }}
 .card-header{{
   padding:16px 20px;border-bottom:1px solid var(--border);
@@ -246,7 +315,7 @@ select,.input{{
   background:var(--bg);color:var(--text);
   border:1px solid var(--border2);border-radius:var(--radius);
   padding:8px 12px;font-size:.88rem;font-family:inherit;
-  transition:border-color .15s;cursor:pointer;
+  transition:border-color .15s,box-shadow .15s,background .15s;cursor:pointer;
 }}
 select:focus,.input:focus{{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(79,142,247,.12)}}
 .input{{cursor:text}}
@@ -258,16 +327,16 @@ select:focus,.input:focus{{outline:none;border-color:var(--accent);box-shadow:0 
   background:var(--accent);color:#fff;border:none;
   border-radius:var(--radius);padding:8px 16px;
   font-size:.83rem;font-weight:600;cursor:pointer;
-  text-decoration:none;transition:background .15s,transform .1s;
+  text-decoration:none;transition:background .15s,transform .1s,box-shadow .2s;
   white-space:nowrap;font-family:inherit;
 }}
-.btn:hover{{background:var(--accent-h);transform:translateY(-1px)}}
-.btn:active{{transform:translateY(0)}}
+.btn:hover{{background:var(--accent-h);transform:translateY(-1px);box-shadow:0 4px 12px rgba(79,142,247,.25)}}
+.btn:active{{transform:translateY(0);box-shadow:none}}
 .btn-sm{{padding:5px 12px;font-size:.78rem}}
 .btn-ghost{{background:transparent;color:var(--text-dim);border:1px solid var(--border2)}}
-.btn-ghost:hover{{background:var(--surface2);color:var(--text);border-color:var(--border2)}}
+.btn-ghost:hover{{background:var(--surface2);color:var(--text);border-color:var(--border2);box-shadow:none}}
 .btn-danger{{background:#7f1d1d;color:var(--red)}}
-.btn-danger:hover{{background:#991b1b}}
+.btn-danger:hover{{background:#991b1b;box-shadow:0 4px 12px rgba(248,113,113,.15)}}
 
 /* ── Log viewer ── */
 .log-toolbar{{
@@ -276,7 +345,7 @@ select:focus,.input:focus{{outline:none;border-color:var(--accent);box-shadow:0 
 }}
 .log-filename{{font-size:.78rem;color:var(--text-dim);font-family:monospace;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}}
 .log-counts{{display:flex;gap:6px;flex-shrink:0}}
-.lc{{font-size:.72rem;padding:2px 8px;border-radius:4px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:.15s}}
+.lc{{font-size:.72rem;padding:2px 8px;border-radius:4px;font-weight:600;cursor:pointer;border:1px solid transparent;transition:transform .15s,box-shadow .15s,background .15s}}
 .lc-e{{background:var(--red-bg);color:var(--red);border-color:#7f1d1d}}
 .lc-w{{background:var(--yellow-bg);color:var(--yellow);border-color:#78350f}}
 .lc-i{{background:var(--green-bg);color:var(--green);border-color:#065f46}}
@@ -312,7 +381,7 @@ th{{
 }}
 td{{
   padding:11px 16px;border-bottom:1px solid var(--border);
-  font-size:.85rem;vertical-align:middle;
+  font-size:.85rem;vertical-align:middle;transition:background .15s;
 }}
 tbody tr:hover td{{background:var(--surface2)}}
 tbody tr:last-child td{{border-bottom:none}}
@@ -330,8 +399,15 @@ td.mono{{font-family:monospace;font-size:.8rem;color:#a0aec0}}
 .empty-state{{
   display:flex;flex-direction:column;align-items:center;justify-content:center;
   padding:60px 20px;gap:12px;color:var(--text-mute);
+  background:
+    radial-gradient(ellipse at center,rgba(79,142,247,.03) 0%,transparent 70%),
+    repeating-linear-gradient(0deg,transparent,transparent 40px,rgba(79,142,247,.015) 40px,rgba(79,142,247,.015) 41px),
+    repeating-linear-gradient(90deg,transparent,transparent 40px,rgba(79,142,247,.015) 40px,rgba(79,142,247,.015) 41px);
+  border-radius:var(--radius-lg);
+  animation:fadeIn .6s ease both;
 }}
-.empty-state svg{{opacity:.3}}
+.empty-state svg{{opacity:.3;transition:opacity .3s}}
+.empty-state:hover svg{{opacity:.5}}
 .empty-state p{{font-size:.88rem}}
 
 /* ── Size pill ── */
@@ -353,8 +429,9 @@ tr.selected td:first-child{{border-left:2px solid var(--accent)}}
   border-radius:40px;padding:10px 20px;
   display:flex;align-items:center;gap:16px;
   box-shadow:0 8px 32px rgba(0,0,0,.5),0 0 0 1px rgba(79,142,247,.2);
-  transition:transform .25s cubic-bezier(.34,1.56,.64,1),opacity .2s;
+  transition:transform .3s cubic-bezier(.34,1.56,.64,1),opacity .25s;
   opacity:0;z-index:200;white-space:nowrap;
+  backdrop-filter:blur(8px);
 }}
 #sel-bar.visible{{transform:translateX(-50%) translateY(0);opacity:1}}
 #sel-bar .sel-count{{
@@ -368,24 +445,66 @@ tr.selected td:first-child{{border-left:2px solid var(--accent)}}
 #toast{{
   position:fixed;bottom:24px;right:24px;
   background:var(--surface2);border:1px solid var(--border2);
-  color:var(--text);padding:12px 20px;border-radius:var(--radius);
-  font-size:.85rem;box-shadow:var(--shadow);
-  transform:translateY(80px);opacity:0;transition:.3s;z-index:999;
-  display:flex;align-items:center;gap:8px;
+  color:var(--text);padding:12px 20px 12px 16px;border-radius:var(--radius-lg);
+  font-size:.85rem;box-shadow:0 8px 32px rgba(0,0,0,.4),0 0 0 1px rgba(255,255,255,.03);
+  transform:translateY(80px) scale(.95);opacity:0;transition:.3s cubic-bezier(.34,1.56,.64,1);z-index:999;
+  display:flex;align-items:center;gap:10px;
+  backdrop-filter:blur(8px);
+  max-width:360px;
 }}
-#toast.show{{transform:translateY(0);opacity:1}}
+#toast.show{{transform:translateY(0) scale(1);opacity:1}}
 #toast.success{{border-left:3px solid var(--green)}}
+#toast.success::before{{content:'✓';font-weight:700;color:var(--green);font-size:1rem}}
 #toast.error{{border-left:3px solid var(--red)}}
+#toast.error::before{{content:'✕';font-weight:700;color:var(--red);font-size:1rem}}
 
 /* ── Responsive ── */
+@media(max-width:1024px){{
+  .page{{max-width:100%;padding:24px}}
+  .stats-grid{{grid-template-columns:repeat(auto-fit,minmax(140px,1fr))}}
+}}
 @media(max-width:768px){{
-  .header{{padding:0 16px}}
-  .page{{padding:16px}}
+  .header{{padding:0 16px;height:50px}}
+  .page{{padding:16px 12px}}
   .nav a span{{display:none}}
-  .stats-grid{{grid-template-columns:repeat(2,1fr)}}
+  .nav a{{padding:0 12px}}
+  .stats-grid{{grid-template-columns:repeat(2,1fr);gap:8px}}
+  .stat-card{{padding:12px 14px}}
+  .stat-card .val{{font-size:1.3rem}}
   .controls{{flex-direction:column}}
   .field{{min-width:100%}}
+  .card-header{{padding:12px 16px;flex-wrap:wrap}}
+  .card-body{{padding:14px}}
+  .log-toolbar{{flex-direction:column;align-items:stretch;gap:8px}}
+  .log-search{{width:100%}}
+  #sel-bar{{
+    left:12px;right:12px;transform:translateX(0) translateY(100px);
+    border-radius:16px;padding:10px 14px;gap:10px;
+  }}
+  #sel-bar.visible{{transform:translateX(0) translateY(0)}}
+  #toast{{left:12px;right:12px;bottom:12px;max-width:none}}
+  .header-badge{{display:none}}
 }}
+@media(max-width:480px){{
+  .stats-grid{{grid-template-columns:1fr}}
+  .nav a{{padding:0 8px}}
+  .logo{{font-size:.95rem;margin-right:16px}}
+  .logo svg{{width:18px;height:18px}}
+}}
+
+/* ── Search hint ── */
+.search-wrap{{position:relative;display:inline-flex;align-items:center}}
+.search-wrap .kbd-hint{{
+  position:absolute;right:8px;top:50%;transform:translateY(-50%);
+  font-size:.65rem;color:var(--text-mute);background:var(--surface2);
+  padding:2px 6px;border-radius:3px;border:1px solid var(--border);
+  pointer-events:none;font-family:monospace;opacity:.7;
+  transition:opacity .2s;
+}}
+.search-wrap input:focus ~ .kbd-hint{{opacity:0}}
+
+/* ── Page load animation ── */
+.page{{animation:fadeIn .4s ease both}}
 </style>
 </head>
 <body>
@@ -602,6 +721,15 @@ function downloadSelected() {{
 document.addEventListener('DOMContentLoaded', function() {{
   loadSelection();
   restoreCheckboxes();
+
+  /* Ctrl+K keyboard shortcut to focus search */
+  document.addEventListener('keydown', function(e) {{
+    if ((e.ctrlKey || e.metaKey) && e.key === 'k') {{
+      e.preventDefault();
+      var s = document.getElementById('log-search-input');
+      if (s) {{ s.focus(); s.select(); }}
+    }}
+  }});
 }});
 </script>
 <div id="toast"></div>
@@ -746,7 +874,7 @@ def dashboard():
                 <input type="hidden" name="run" value="{_html.escape(sel_run)}"/>
                 <input type="hidden" name="pod" value="{_html.escape(sel_pod)}"/>
                 <input type="hidden" name="level" value="{_html.escape(level)}"/>
-                <input class="input log-search" name="q" placeholder="Search logs..." value="{_html.escape(search)}" type="text"/>
+                <span class="search-wrap"><input class="input log-search" name="q" placeholder="Search logs..." value="{_html.escape(search)}" type="text" id="log-search-input"/><span class="kbd-hint">Ctrl+K</span></span>
                 <button class="btn btn-sm" type="submit">Search</button>
                 {"<a class='btn btn-ghost btn-sm' href='/?run=" + _html.escape(sel_run) + "&pod=" + _html.escape(sel_pod) + "&level=" + level + "'>Clear</a>" if search else ""}
               </form>
