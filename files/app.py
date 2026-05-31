@@ -1211,8 +1211,22 @@ def search_page():
     date_from = request.args.get("from", "").strip()
     date_to   = request.args.get("to", "").strip()
 
+    # Get unique namespaces for dropdown
+    ns_list = []
+    if _use_index:
+        try:
+            from index_db import get_db
+            db = get_db()
+            ns_rows = db.execute("SELECT DISTINCT namespace FROM log_files WHERE namespace != '' ORDER BY namespace").fetchall()
+            ns_list = [r[0] for r in ns_rows]
+            db.close()
+        except Exception:
+            pass
+
+    sel_ns = request.args.get("ns", "").strip()
+
     results = []
-    if pod_query:
+    if pod_query or sel_ns:
         # Query SQLite for matching files across all runs
         if _use_index:
             try:
@@ -1224,9 +1238,17 @@ def search_page():
                            f.error_count, f.warn_count, f.info_count, f.debug_count
                     FROM log_files f
                     JOIN runs r ON f.run_id = r.id
-                    WHERE (f.pod LIKE ? OR f.namespace LIKE ? OR f.filename LIKE ?)
+                    WHERE 1=1
                 """
-                params = [f"%{pod_query}%", f"%{pod_query}%", f"%{pod_query}%"]
+                params = []
+
+                if pod_query:
+                    query += " AND (f.pod LIKE ? OR f.namespace LIKE ? OR f.filename LIKE ?)"
+                    params.extend([f"%{pod_query}%", f"%{pod_query}%", f"%{pod_query}%"])
+
+                if sel_ns:
+                    query += " AND f.namespace = ?"
+                    params.append(sel_ns)
 
                 if date_from:
                     query += " AND r.name >= ?"
@@ -1252,7 +1274,8 @@ def search_page():
                 run_dir = LOGS_DIR / run
                 if run_dir.is_dir():
                     for f in run_dir.glob("*.log"):
-                        if pod_query.lower() in f.name.lower():
+                        if (not pod_query or pod_query.lower() in f.name.lower()) and \
+                           (not sel_ns or f.stem.split("__")[0] == sel_ns):
                             results.append({
                                 "run_name": run,
                                 "filename": f.name,
@@ -1265,7 +1288,12 @@ def search_page():
                                 "info_count": 0, "debug_count": 0,
                             })
 
-    # Build the page
+    # Build namespace options
+    ns_opts = "".join(
+        f'<option value="{_html.escape(n)}" {"selected" if n==sel_ns else ""}>{_html.escape(n)}</option>'
+        for n in ns_list
+    )
+
     controls = f"""
     <div class="card">
       <div class="card-header">
@@ -1279,17 +1307,24 @@ def search_page():
       <div class="card-body">
         <form method="get" action="/search">
           <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
-            <div class="field" style="flex:1;min-width:200px">
-              <label>Pod / Namespace / Container</label>
-              <input class="input" name="pod" placeholder="e.g. api, production, nginx..."
+            <div class="field" style="flex:1;min-width:180px">
+              <label>Pod / Container</label>
+              <input class="input" name="pod" placeholder="e.g. api, nginx, worker..."
                      value="{_html.escape(pod_query)}" type="text"/>
             </div>
             <div class="field" style="min-width:160px">
+              <label>Namespace</label>
+              <select name="ns">
+                <option value="">All namespaces</option>
+                {ns_opts}
+              </select>
+            </div>
+            <div class="field" style="min-width:140px">
               <label>From date</label>
               <input class="input" name="from" placeholder="2026-05-01"
                      value="{_html.escape(date_from)}" type="text"/>
             </div>
-            <div class="field" style="min-width:160px">
+            <div class="field" style="min-width:140px">
               <label>To date</label>
               <input class="input" name="to" placeholder="2026-05-31"
                      value="{_html.escape(date_to)}" type="text"/>
@@ -1308,7 +1343,7 @@ def search_page():
       </div>
     </div>"""
 
-    if pod_query and results:
+    if (pod_query or sel_ns) and results:
         rows_html = ""
         for r in results:
             sz = _human_size(r["size_bytes"])
@@ -1327,6 +1362,11 @@ def search_page():
                 level_badges += f'<span class="badge badge-warn">{wrn} warn</span>'
 
             rows_html += f"""<tr>
+              <td class="cb-wrap">
+                <input type="checkbox" class="row-cb"
+                       data-run="{run}" data-file="{fn}" data-type="log"
+                       onchange="toggleRow(this)"/>
+              </td>
               <td style="font-size:.78rem;color:var(--text-dim);font-family:monospace">{run}</td>
               <td><span class="badge badge-ns">{ns}</span></td>
               <td class="mono">{pod}</td>
@@ -1351,18 +1391,27 @@ def search_page():
         <div class="card">
           <div class="card-header">
             <span class="card-title">Results</span>
-            <span style="font-size:.75rem;color:var(--text-dim)">{len(results)} file{"s" if len(results)!=1 else ""} found</span>
+            <div style="display:flex;align-items:center;gap:12px">
+              <span style="font-size:.75rem;color:var(--text-dim)">{len(results)} file{"s" if len(results)!=1 else ""} found</span>
+              <button class="btn btn-ghost btn-sm" type="button"
+                onclick="var cb=document.getElementById('cb-all');cb.checked=true;toggleAll(cb);">Select All</button>
+              <button class="btn btn-ghost btn-sm" type="button"
+                onclick="deselectAll()">Deselect All</button>
+            </div>
           </div>
           <div class="table-wrap">
             <table>
               <thead>
-                <tr><th>Run</th><th>Namespace</th><th>Pod</th><th>Container</th><th>Size</th><th>Levels</th><th>Actions</th></tr>
+                <tr>
+                  <th style="width:40px"><input type="checkbox" id="cb-all" onchange="toggleAll(this)"/></th>
+                  <th>Run</th><th>Namespace</th><th>Pod</th><th>Container</th><th>Size</th><th>Levels</th><th>Actions</th>
+                </tr>
               </thead>
               <tbody>{rows_html}</tbody>
             </table>
           </div>
         </div>"""
-    elif pod_query:
+    elif pod_query or sel_ns:
         table = '<div class="empty-state"><p>No files match your search.</p></div>'
     else:
         table = """<div class="empty-state">
