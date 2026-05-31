@@ -534,6 +534,10 @@ tr.selected td:first-child{{border-left:2px solid var(--accent)}}
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="5 3 19 12 5 21 5 3"/></svg>
       <span>On-Demand</span>
     </a>
+    <a href="/search" class="{a_search}">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <span>Search</span>
+    </a>
   </nav>
   <div class="header-right">
     <span class="header-badge">RKE2</span>
@@ -742,6 +746,7 @@ def render_page(tab, body, title_suffix=""):
         title_suffix=f" — {title_suffix}" if title_suffix else "",
         a_dash=a("dashboard"), a_dl=a("downloads"),
         a_files=a("files"), a_collect=a("collect"),
+        a_search=a("search"),
         body=body
     )
 
@@ -1197,6 +1202,177 @@ def download_log(run, filename):
     if not path.exists() or not path.is_file():
         abort(404)
     return send_file(str(path), as_attachment=True, download_name=filename)
+
+
+# ------------------------------------------------------------------ search across runs
+@app.route("/search")
+def search_page():
+    pod_query = request.args.get("pod", "").strip()
+    date_from = request.args.get("from", "").strip()
+    date_to   = request.args.get("to", "").strip()
+
+    results = []
+    if pod_query:
+        # Query SQLite for matching files across all runs
+        if _use_index:
+            try:
+                from index_db import get_db
+                db = get_db()
+                query = """
+                    SELECT r.name as run_name, f.filename, f.namespace, f.pod, 
+                           f.container, f.size_bytes, f.line_count,
+                           f.error_count, f.warn_count, f.info_count, f.debug_count
+                    FROM log_files f
+                    JOIN runs r ON f.run_id = r.id
+                    WHERE (f.pod LIKE ? OR f.namespace LIKE ? OR f.filename LIKE ?)
+                """
+                params = [f"%{pod_query}%", f"%{pod_query}%", f"%{pod_query}%"]
+
+                if date_from:
+                    query += " AND r.name >= ?"
+                    params.append(date_from)
+                if date_to:
+                    query += " AND r.name <= ?"
+                    params.append(date_to + "_99-99-99")
+
+                query += " ORDER BY r.name DESC, f.filename LIMIT 500"
+                rows = db.execute(query, params).fetchall()
+                results = [dict(r) for r in rows]
+                db.close()
+            except Exception as e:
+                results = []
+        else:
+            # Fallback: scan NFS (slow)
+            runs = get_runs()
+            if date_from:
+                runs = [r for r in runs if r >= date_from]
+            if date_to:
+                runs = [r for r in runs if r <= date_to + "_99-99-99"]
+            for run in runs[:30]:
+                run_dir = LOGS_DIR / run
+                if run_dir.is_dir():
+                    for f in run_dir.glob("*.log"):
+                        if pod_query.lower() in f.name.lower():
+                            results.append({
+                                "run_name": run,
+                                "filename": f.name,
+                                "namespace": f.stem.split("__")[0] if "__" in f.stem else "",
+                                "pod": f.stem.split("__")[1] if len(f.stem.split("__")) > 1 else "",
+                                "container": f.stem.split("__")[2] if len(f.stem.split("__")) > 2 else "",
+                                "size_bytes": f.stat().st_size,
+                                "line_count": 0,
+                                "error_count": 0, "warn_count": 0,
+                                "info_count": 0, "debug_count": 0,
+                            })
+
+    # Build the page
+    controls = f"""
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          Search Across All Runs
+        </span>
+      </div>
+      <div class="card-body">
+        <form method="get" action="/search">
+          <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end">
+            <div class="field" style="flex:1;min-width:200px">
+              <label>Pod / Namespace / Container</label>
+              <input class="input" name="pod" placeholder="e.g. api, production, nginx..."
+                     value="{_html.escape(pod_query)}" type="text"/>
+            </div>
+            <div class="field" style="min-width:160px">
+              <label>From date</label>
+              <input class="input" name="from" placeholder="2026-05-01"
+                     value="{_html.escape(date_from)}" type="text"/>
+            </div>
+            <div class="field" style="min-width:160px">
+              <label>To date</label>
+              <input class="input" name="to" placeholder="2026-05-31"
+                     value="{_html.escape(date_to)}" type="text"/>
+            </div>
+            <div class="field" style="min-width:auto">
+              <label>&nbsp;</label>
+              <button class="btn" type="submit">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                  <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+                </svg>
+                Search
+              </button>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>"""
+
+    if pod_query and results:
+        rows_html = ""
+        for r in results:
+            sz = _human_size(r["size_bytes"])
+            run = _html.escape(r["run_name"])
+            fn  = _html.escape(r["filename"])
+            ns  = _html.escape(r.get("namespace", ""))
+            pod = _html.escape(r.get("pod", ""))
+            ctr = _html.escape(r.get("container", ""))
+            err = r.get("error_count", 0)
+            wrn = r.get("warn_count", 0)
+
+            level_badges = ""
+            if err > 0:
+                level_badges += f'<span class="badge badge-error">{err} err</span> '
+            if wrn > 0:
+                level_badges += f'<span class="badge badge-warn">{wrn} warn</span>'
+
+            rows_html += f"""<tr>
+              <td style="font-size:.78rem;color:var(--text-dim);font-family:monospace">{run}</td>
+              <td><span class="badge badge-ns">{ns}</span></td>
+              <td class="mono">{pod}</td>
+              <td class="mono">{ctr}</td>
+              <td><span class="size">{sz}</span></td>
+              <td>{level_badges}</td>
+              <td>
+                <div style="display:flex;gap:6px">
+                  <a class="btn btn-sm" href="/?run={run}&pod={fn}">View</a>
+                  <a class="btn btn-ghost btn-sm" href="/download/log/{run}/{fn}">
+                    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+                      <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                      <polyline points="7 10 12 15 17 10"/>
+                      <line x1="12" y1="15" x2="12" y2="3"/>
+                    </svg>
+                  </a>
+                </div>
+              </td>
+            </tr>"""
+
+        table = f"""
+        <div class="card">
+          <div class="card-header">
+            <span class="card-title">Results</span>
+            <span style="font-size:.75rem;color:var(--text-dim)">{len(results)} file{"s" if len(results)!=1 else ""} found</span>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr><th>Run</th><th>Namespace</th><th>Pod</th><th>Container</th><th>Size</th><th>Levels</th><th>Actions</th></tr>
+              </thead>
+              <tbody>{rows_html}</tbody>
+            </table>
+          </div>
+        </div>"""
+    elif pod_query:
+        table = '<div class="empty-state"><p>No files match your search.</p></div>'
+    else:
+        table = """<div class="empty-state">
+          <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+            <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+          </svg>
+          <p>Search for a pod, namespace, or container name across all collection runs</p>
+        </div>"""
+
+    return render_page("search", controls + table, "Search")
 
 
 # ------------------------------------------------------------------ on-demand collect
