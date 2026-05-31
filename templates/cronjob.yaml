@@ -16,13 +16,14 @@ metadata:
 spec:
   schedule: {{ $schedule | quote }}
   concurrencyPolicy: Forbid
-  successfulJobsHistoryLimit: 3
-  failedJobsHistoryLimit: 5
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
   jobTemplate:
     spec:
       # Retry up to 3 times if pod fails to start (scheduling, mount issues)
       backoffLimit: 3
       activeDeadlineSeconds: 7200
+      ttlSecondsAfterFinished: 3600
       template:
         metadata:
           labels:
