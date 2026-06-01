@@ -39,7 +39,7 @@ Designed for RKE2 clusters in air-gapped environments, LogNest requires no exter
                                     |
                                     v
     +-------------------------------------------------------+
-    |              COLLECTOR (Python, 8 threads)             |
+    |              COLLECTOR (Python, 8 threads)            |
     |                                                       |
     |  Phase 1: Read /var/log/pods (node disk, fast)        |
     |  Phase 2: kubectl logs API (multi-node safety net)    |
@@ -53,7 +53,7 @@ Designed for RKE2 clusters in air-gapped environments, LogNest requires no exter
                                     |
                                     v
     +-------------------------------------------------------+
-    |              NFS PVC (150Gi, ReadWriteMany)            |
+    |              NFS PVC (150Gi, ReadWriteMany)           |
     |                                                       |
     |  /logs/          raw .log files per run               |
     |  /logs_zip/      compressed .tar.gz archives          |
@@ -62,7 +62,7 @@ Designed for RKE2 clusters in air-gapped environments, LogNest requires no exter
                                     ^
                                     |
     +-------------------------------------------------------+
-    |              WEB UI (Flask + Gunicorn)                 |
+    |              WEB UI (Flask + Gunicorn)                |
     |                                                       |
     |  - Dashboard with stats + log viewer                  |
     |  - Search across all runs (SQLite index)              |
@@ -75,7 +75,7 @@ Designed for RKE2 clusters in air-gapped environments, LogNest requires no exter
                                     v
     +-------------------------------------------------------+
     |  Service:8080 --> Ingress (nginx)                     |
-    |                   lognest.example.com                  |
+    |                   lognest.example.com                 |
     +-------------------------------------------------------+
 ```
 
