@@ -540,7 +540,10 @@ if __name__ == "__main__":
     try:
         total = 0
         total += collect_from_node()
-        total += collect_from_api()
+        if os.environ.get("ENABLE_API_PHASE", "true").lower() in ("true", "1", "yes"):
+            total += collect_from_api()
+        else:
+            print("[LogNest] Phase 2: SKIPPED (enableApiPhase=false)")
 
         save_offsets(OFFSETS)
         save_last_epoch()
@@ -590,19 +593,17 @@ if __name__ == "__main__":
             else:
                 pvc_str = f"{pvc_bytes:.1f} TB"
 
-            stat = os.statvfs("/data")
-            nfs_total = stat.f_blocks * stat.f_frsize
-            nfs_used  = (stat.f_blocks - stat.f_bavail) * stat.f_frsize
-            nfs_pct   = int(nfs_used / nfs_total * 100) if nfs_total > 0 else 0
-            nfs_total_gb = nfs_total / (1024**3)
-            nfs_used_gb  = nfs_used  / (1024**3)
+            # PVC capacity from env var
+            pvc_cap_str = os.environ.get("PVC_SIZE", "150Gi")
+            pvc_cap_gb = int(pvc_cap_str.replace("Gi", "")) if "Gi" in pvc_cap_str else 150
+            pvc_used_gb = pvc_used / (1024**3)
+            pvc_pct = int(pvc_used_gb / pvc_cap_gb * 100) if pvc_cap_gb > 0 else 0
         except Exception:
-            pvc_str = "?"; nfs_pct = "?"; nfs_used_gb = "?"; nfs_total_gb = "?"
+            pvc_str = "?"; pvc_pct = "?"; pvc_cap_gb = "?"
 
         print(f"[LogNest] ============================================")
         print(f"[LogNest] Done. Files: {total}")
-        print(f"[LogNest] PVC data used: {pvc_str}")
-        print(f"[LogNest] NFS disk: {nfs_used_gb:.1f}GB / {nfs_total_gb:.1f}GB ({nfs_pct}%)")
+        print(f"[LogNest] PVC usage: {pvc_str} / {pvc_cap_gb}Gi ({pvc_pct}%)")
         print(f"[LogNest] ============================================")
 
     finally:

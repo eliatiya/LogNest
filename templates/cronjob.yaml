@@ -68,6 +68,8 @@ spec:
                   value: "8"
                 - name: MAX_FILE_SIZE_MB
                   value: "100"
+                - name: ENABLE_API_PHASE
+                  value: "{{ .Values.collector.enableApiPhase }}"
                 - name: NODE_NAME
                   valueFrom:
                     fieldRef:
