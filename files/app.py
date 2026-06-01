@@ -558,7 +558,14 @@ tr.selected td:first-child{{border-left:2px solid var(--accent)}}
     <span class="sel-label" id="sel-label">items selected</span>
   </div>
   <span class="sep"></span>
-  <button class="btn btn-sm" onclick="downloadSelected()">
+  <button class="btn btn-sm" id="view-multi-btn" onclick="viewSelected()" style="display:none">
+    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+      <circle cx="12" cy="12" r="3"/>
+    </svg>
+    View Together
+  </button>
+  <button class="btn btn-ghost btn-sm" onclick="downloadSelected()">
     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
       <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
       <polyline points="7 10 12 15 17 10"/>
@@ -679,9 +686,33 @@ function updateBar() {{
   var bar   = document.getElementById('sel-bar');
   var cnt   = document.getElementById('sel-count');
   var lbl   = document.getElementById('sel-label');
+  var viewBtn = document.getElementById('view-multi-btn');
   cnt.textContent = count;
   lbl.textContent = count === 1 ? 'item selected' : 'items selected';
   bar.classList.toggle('visible', count > 0);
+  // Show "View Together" only when multiple log files are selected (not zips)
+  var logCount = Object.keys(selectedItems).filter(function(k){{return selectedItems[k].type !== 'zip';}}).length;
+  if (viewBtn) viewBtn.style.display = logCount >= 2 ? 'inline-flex' : 'none';
+}}
+
+function viewSelected() {{
+  var keys = Object.keys(selectedItems).filter(function(k){{return selectedItems[k].type !== 'zip';}});
+  if (keys.length < 2) return;
+  var form = document.createElement('form');
+  form.method = 'POST';
+  form.action = '/view-multi';
+  form.target = '_blank';
+  keys.forEach(function(k) {{
+    var item = selectedItems[k];
+    var i1 = document.createElement('input');
+    i1.type='hidden'; i1.name='run[]'; i1.value=item.run;
+    var i2 = document.createElement('input');
+    i2.type='hidden'; i2.name='file[]'; i2.value=item.file;
+    form.appendChild(i1); form.appendChild(i2);
+  }});
+  document.body.appendChild(form);
+  form.submit();
+  document.body.removeChild(form);
 }}
 
 function downloadSelected() {{
@@ -1473,6 +1504,123 @@ def search_page():
         </div>"""
 
     return render_page("search", controls + table, "Search")
+
+
+# ------------------------------------------------------------------ view-multi
+@app.route("/view-multi", methods=["POST"])
+def view_multi():
+    runs  = request.form.getlist("run[]")
+    files = request.form.getlist("file[]")
+
+    if not runs or len(runs) != len(files):
+        abort(400)
+
+    # Color palette for different pods
+    POD_COLORS = [
+        "#4f8ef7", "#34d399", "#fbbf24", "#f87171",
+        "#a78bfa", "#fb923c", "#38bdf8", "#f472b6",
+        "#86efac", "#fde68a",
+    ]
+
+    # Read and tag each line with its source
+    all_lines = []
+    sources = []
+    for i, (run, filename) in enumerate(zip(runs, files)):
+        run      = Path(run).name
+        filename = Path(filename).name
+        path     = LOGS_DIR / run / filename
+        if not path.exists():
+            continue
+        color = POD_COLORS[i % len(POD_COLORS)]
+        label = filename.replace(".log", "").split("__")
+        short = f"{label[1]}/{label[2]}" if len(label) >= 3 else filename
+        sources.append({"label": short, "color": color, "file": filename, "run": run})
+
+        try:
+            content = path.read_text(errors="replace")
+            for line in content.splitlines():
+                all_lines.append((line, i, short, color))
+        except Exception:
+            continue
+
+    # Sort by timestamp prefix (ISO format at start of line)
+    def extract_ts(line_tuple):
+        line = line_tuple[0]
+        # Try to extract timestamp from start of line
+        parts = line.split(" ", 1)
+        if parts and len(parts[0]) >= 10:
+            return parts[0]
+        return ""
+
+    all_lines.sort(key=extract_ts)
+
+    # Build legend
+    legend_html = "".join(
+        f'<span style="display:inline-flex;align-items:center;gap:5px;margin-right:12px;font-size:.78rem">'
+        f'<span style="width:10px;height:10px;border-radius:50%;background:{s["color"]};flex-shrink:0"></span>'
+        f'{_html.escape(s["label"])}</span>'
+        for s in sources
+    )
+
+    # Build merged log HTML
+    log_lines_html = ""
+    for line, src_idx, label, color in all_lines:
+        esc = _html.escape(line)
+        ll = line.lower()
+        if 'error' in ll:   level_cls = "log-error"
+        elif 'warn' in ll:  level_cls = "log-warn"
+        elif 'debug' in ll: level_cls = "log-debug"
+        elif 'info' in ll:  level_cls = "log-info"
+        else:               level_cls = "log-ts"
+
+        log_lines_html += (
+            f'<span class="log-line {level_cls}" style="border-left:2px solid {color};padding-left:6px">'
+            f'<span style="color:{color};font-size:.7rem;margin-right:6px;opacity:.8">[{_html.escape(label)}]</span>'
+            f'{esc}</span>\n'
+        )
+
+    body = f"""
+    <div class="card">
+      <div class="card-header">
+        <span class="card-title">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+            <circle cx="12" cy="12" r="3"/>
+          </svg>
+          Multi-Pod View — {len(all_lines):,} lines from {len(sources)} sources
+        </span>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span style="font-size:.75rem;color:var(--text-dim)">sorted by timestamp</span>
+        </div>
+      </div>
+      <div style="padding:12px 16px;background:var(--bg);border-bottom:1px solid var(--border);display:flex;flex-wrap:wrap;gap:4px">
+        {legend_html}
+      </div>
+      <div style="padding:8px 16px;background:var(--bg);border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center">
+        <input class="input" id="mp-search" placeholder="Search across all pods..." type="text"
+               style="flex:1;max-width:400px;padding:5px 10px;font-size:.8rem"
+               oninput="filterMulti(this.value)"/>
+        <span id="mp-count" style="font-size:.75rem;color:var(--text-dim)">{len(all_lines):,} lines</span>
+      </div>
+      <pre id="mp-log" style="background:var(--bg);padding:16px;overflow:auto;max-height:75vh;
+           font-size:.78rem;line-height:1.8;white-space:pre-wrap;word-break:break-all;
+           font-family:'JetBrains Mono','Fira Code',monospace;margin:0">{log_lines_html}</pre>
+    </div>
+    <script>
+    function filterMulti(q) {{
+      var lines = document.querySelectorAll('#mp-log .log-line');
+      var count = 0;
+      var ql = q.toLowerCase();
+      lines.forEach(function(l) {{
+        var show = !ql || l.textContent.toLowerCase().includes(ql);
+        l.style.display = show ? 'block' : 'none';
+        if (show) count++;
+      }});
+      document.getElementById('mp-count').textContent = count.toLocaleString() + ' lines';
+    }}
+    </script>"""
+
+    return render_page("search", body, "Multi-Pod View")
 
 
 # ------------------------------------------------------------------ on-demand collect
