@@ -61,6 +61,38 @@ RUN_DIR = LOGS_DIR / TIMESTAMP
 RUN_DIR.mkdir(parents=True, exist_ok=True)
 ZIP_DIR.mkdir(parents=True, exist_ok=True)
 
+# Fix #6: Add 5-minute tolerance to LAST_EPOCH to handle clock skew
+# If node clock jumped backward, files might appear older than they are
+CLOCK_SKEW_TOLERANCE = 300  # 5 minutes in seconds
+LAST_EPOCH_WITH_TOLERANCE = max(0, LAST_EPOCH - CLOCK_SKEW_TOLERANCE)
+
+# Fix #40: Lock file to prevent concurrent collector runs (CronJob + on-demand)
+LOCK_FILE = Path("/data/.lognest_collecting")
+
+def acquire_lock():
+    """Try to acquire collection lock. Returns True if acquired."""
+    try:
+        if LOCK_FILE.exists():
+            # Check if lock is stale (older than 3 hours)
+            lock_age = NOW_EPOCH - int(LOCK_FILE.stat().st_mtime)
+            if lock_age < 10800:  # 3 hours
+                print(f"[LogNest] WARN: Another collector is running (lock age: {lock_age}s). Exiting.")
+                return False
+            else:
+                print(f"[LogNest] Removing stale lock (age: {lock_age}s)")
+        LOCK_FILE.write_text(str(NOW_EPOCH))
+        return True
+    except Exception as e:
+        print(f"[LogNest] WARN: Could not acquire lock: {e}")
+        return True  # Proceed anyway if lock file can't be created
+
+def release_lock():
+    """Release the collection lock."""
+    try:
+        LOCK_FILE.unlink(missing_ok=True)
+    except Exception:
+        pass
+
 # Track what Phase 1 collected to avoid duplicates in Phase 2
 PHASE1_COLLECTED = set()   # containers fully collected from node
 PHASE1_ROTATIONS = set()   # containers where rotation was detected
@@ -68,7 +100,7 @@ PHASE1_ROTATIONS = set()   # containers where rotation was detected
 if LAST_EPOCH == 0:
     print("[LogNest] First run: collecting ALL logs")
 else:
-    print(f"[LogNest] Incremental: collecting since epoch {LAST_EPOCH}")
+    print(f"[LogNest] Incremental: collecting since epoch {LAST_EPOCH} (tolerance: -{CLOCK_SKEW_TOLERANCE}s)")
 
 
 def get_split_writer(base_path):
@@ -145,7 +177,7 @@ def collect_container_from_node(container_dir, ns, pod, container):
 
         for rot in rotated:
             file_mtime = int(rot.stat().st_mtime)
-            if file_mtime <= LAST_EPOCH:
+            if file_mtime <= LAST_EPOCH_WITH_TOLERANCE:
                 continue
             rotation_detected = True
 
@@ -501,67 +533,79 @@ def cleanup_retention():
 
 # ── Main ──
 if __name__ == "__main__":
-    total = 0
-    total += collect_from_node()
-    total += collect_from_api()
-
-    save_offsets(OFFSETS)
-    save_last_epoch()
-
-    compress_run()
-    
-    # Index this run in SQLite for instant UI queries
-    try:
-        sys.path.insert(0, "/scripts")
-        from index_db import init_db, index_run, index_archive
-        init_db()
-        if RUN_DIR.exists() and any(RUN_DIR.glob("*.log")):
-            index_run(TIMESTAMP, str(RUN_DIR), TIMESTAMP)
-            print(f"[LogNest] Indexed run in SQLite")
-        zip_file = ZIP_DIR / f"lognest_{TIMESTAMP}.tar.gz"
-        if zip_file.exists():
-            index_archive(zip_file.name, zip_file.stat().st_size)
-    except Exception as e:
-        print(f"[LogNest] WARN: indexing failed: {e}")
-
-    cleanup_capacity()
-    cleanup_retention()
+    # Fix #40: Acquire lock to prevent concurrent collector runs
+    if not acquire_lock():
+        sys.exit(0)
 
     try:
-        # PVC usage: actual LogNest data size
-        pvc_used = 0
-        for f in Path("/data").rglob("*"):
-            if f.is_file():
-                try:
-                    pvc_used += f.stat().st_size
-                except Exception:
-                    pass
-        pvc_str = ""
-        pvc_bytes = pvc_used
-        for unit in ["B", "KB", "MB", "GB"]:
-            if pvc_bytes < 1024:
-                pvc_str = f"{pvc_bytes:.1f} {unit}"
-                break
-            pvc_bytes /= 1024
-        else:
-            pvc_str = f"{pvc_bytes:.1f} TB"
+        total = 0
+        total += collect_from_node()
+        total += collect_from_api()
 
-        # NFS disk: underlying filesystem usage
-        stat = os.statvfs("/data")
-        nfs_total = stat.f_blocks * stat.f_frsize
-        nfs_used = (stat.f_blocks - stat.f_bavail) * stat.f_frsize
-        nfs_pct = int(nfs_used / nfs_total * 100) if nfs_total > 0 else 0
-        nfs_total_gb = nfs_total / (1024**3)
-        nfs_used_gb = nfs_used / (1024**3)
-    except Exception:
-        pvc_str = "?"
-        nfs_pct = "?"
-        nfs_used_gb = "?"
-        nfs_total_gb = "?"
+        save_offsets(OFFSETS)
+        save_last_epoch()
 
-    print(f"[LogNest] ============================================")
-    print(f"[LogNest] Done. Files: {total}")
-    print(f"[LogNest] PVC data used: {pvc_str}")
-    print(f"[LogNest] NFS disk: {nfs_used_gb:.1f}GB / {nfs_total_gb:.1f}GB ({nfs_pct}%)")
-    print(f"[LogNest] ============================================")
+        compress_run()
+
+        # Index this run in SQLite for instant UI queries
+        try:
+            sys.path.insert(0, "/scripts")
+            from index_db import init_db, index_run, index_archive
+            init_db()
+            if RUN_DIR.exists() and any(RUN_DIR.glob("*.log")):
+                index_run(TIMESTAMP, str(RUN_DIR), TIMESTAMP)
+                print(f"[LogNest] Indexed run in SQLite")
+            zip_file = ZIP_DIR / f"lognest_{TIMESTAMP}.tar.gz"
+            if zip_file.exists():
+                index_archive(zip_file.name, zip_file.stat().st_size)
+        except Exception as e:
+            print(f"[LogNest] WARN: indexing failed: {e}")
+
+        cleanup_capacity()
+        cleanup_retention()
+
+        # Fix #5: Clean dead entries from offsets file (paths that no longer exist on node)
+        dead_keys = [k for k in OFFSETS if not Path(k).exists()]
+        if dead_keys:
+            for k in dead_keys:
+                del OFFSETS[k]
+            save_offsets(OFFSETS)
+            print(f"[LogNest] Cleaned {len(dead_keys)} dead offset entries")
+
+        try:
+            pvc_used = 0
+            for f in Path("/data").rglob("*"):
+                if f.is_file():
+                    try:
+                        pvc_used += f.stat().st_size
+                    except Exception:
+                        pass
+            pvc_str = ""
+            pvc_bytes = pvc_used
+            for unit in ["B", "KB", "MB", "GB"]:
+                if pvc_bytes < 1024:
+                    pvc_str = f"{pvc_bytes:.1f} {unit}"
+                    break
+                pvc_bytes /= 1024
+            else:
+                pvc_str = f"{pvc_bytes:.1f} TB"
+
+            stat = os.statvfs("/data")
+            nfs_total = stat.f_blocks * stat.f_frsize
+            nfs_used  = (stat.f_blocks - stat.f_bavail) * stat.f_frsize
+            nfs_pct   = int(nfs_used / nfs_total * 100) if nfs_total > 0 else 0
+            nfs_total_gb = nfs_total / (1024**3)
+            nfs_used_gb  = nfs_used  / (1024**3)
+        except Exception:
+            pvc_str = "?"; nfs_pct = "?"; nfs_used_gb = "?"; nfs_total_gb = "?"
+
+        print(f"[LogNest] ============================================")
+        print(f"[LogNest] Done. Files: {total}")
+        print(f"[LogNest] PVC data used: {pvc_str}")
+        print(f"[LogNest] NFS disk: {nfs_used_gb:.1f}GB / {nfs_total_gb:.1f}GB ({nfs_pct}%)")
+        print(f"[LogNest] ============================================")
+
+    finally:
+        release_lock()  # Fix #40: Always release lock, even on error
+
     sys.exit(0)
