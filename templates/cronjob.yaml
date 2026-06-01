@@ -1,3 +1,4 @@
+{{- if ne .Values.collector.mode "daemonset" }}
 {{- $root := . }}
 {{- $schedules := list .Values.collector.schedule1 }}
 {{- if .Values.collector.schedule2 }}
@@ -94,4 +95,5 @@ spec:
               hostPath:
                 path: /var/log/pods
                 type: Directory
+{{- end }}
 {{- end }}

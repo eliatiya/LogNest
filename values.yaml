@@ -22,6 +22,11 @@ namespace:
 # Log Collector CronJob
 # ============================================================
 collector:
+  # Collector deployment mode:
+  #   cronjob   — single pod runs on schedule (default, good for single-node)
+  #   daemonset — one pod per node runs on schedule (good for multi-node clusters)
+  mode: cronjob
+
   # Cron schedule — default every 4 hours for minimal log loss risk
   # Format: standard cron (minute hour day month weekday)
   schedule1: "0 */4 * * *"

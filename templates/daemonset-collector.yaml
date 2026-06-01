@@ -1,0 +1,123 @@
+{{- if eq .Values.collector.mode "daemonset" }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "lognest.fullname" . }}-collector
+  namespace: {{ include "lognest.namespace" . }}
+  labels:
+    {{- include "lognest.labels" . | nindent 4 }}
+    lognest/component: collector
+spec:
+  selector:
+    matchLabels:
+      {{- include "lognest.selectorLabels" . | nindent 6 }}
+      lognest/component: collector
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        {{- include "lognest.selectorLabels" . | nindent 8 }}
+        lognest/component: collector
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      {{- include "lognest.imagePullSecrets" . | nindent 6 }}
+      {{- with .Values.collector.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.collector.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: collector
+          image: {{ include "lognest.image" (dict "registry" .Values.global.imageRegistry "repository" .Values.collector.image.repository "tag" .Values.collector.image.tag) }}
+          imagePullPolicy: {{ .Values.collector.image.pullPolicy }}
+          command:
+            - python3
+            - -c
+            - |
+              import time, subprocess, sys, os
+
+              # Convert cron schedule to sleep interval in seconds
+              # schedule1 format: "0 */4 * * *" → every 4 hours = 14400s
+              schedule = os.environ.get("SCHEDULE", "0 */4 * * *")
+              parts = schedule.split()
+              interval = 14400  # default 4 hours
+
+              # Parse simple "*/N" hour patterns
+              if len(parts) >= 2 and parts[1].startswith("*/"):
+                  try:
+                      hours = int(parts[1][2:])
+                      interval = hours * 3600
+                  except Exception:
+                      pass
+              elif len(parts) >= 2 and parts[1].isdigit():
+                  # Fixed hour like "0 2 * * *" → run once per day
+                  interval = 86400
+
+              print(f"[LogNest-DaemonSet] Starting on node {os.environ.get('NODE_NAME','?')}")
+              print(f"[LogNest-DaemonSet] Collection interval: {interval}s ({interval//3600}h)")
+
+              # Run immediately on startup, then on interval
+              while True:
+                  print(f"[LogNest-DaemonSet] Starting collection...")
+                  result = subprocess.run(
+                      ["python3", "/scripts/collect.py"],
+                      env={**os.environ}
+                  )
+                  if result.returncode != 0:
+                      print(f"[LogNest-DaemonSet] Collection exited with {result.returncode}")
+                  print(f"[LogNest-DaemonSet] Sleeping {interval}s until next run...")
+                  time.sleep(interval)
+          env:
+            - name: LOGS_DIR
+              value: /data/{{ .Values.storage.logsDir }}
+            - name: ZIP_DIR
+              value: /data/{{ .Values.storage.logsZipDir }}
+            - name: RETENTION_MONTHS
+              value: "{{ .Values.collector.retentionMonths }}"
+            - name: CAPACITY_THRESHOLD
+              value: "{{ .Values.collector.capacityThresholdPercent }}"
+            - name: COLLECTOR_THREADS
+              value: "8"
+            - name: MAX_FILE_SIZE_MB
+              value: "100"
+            - name: SCHEDULE
+              value: {{ .Values.collector.schedule1 | quote }}
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          resources:
+            # Idle (sleeping): ~10MB RAM, 0 CPU
+            # Active (collecting): uses configured limits
+            requests:
+              cpu: "10m"
+              memory: "32Mi"
+            limits:
+              cpu: {{ .Values.collector.resources.limits.cpu | quote }}
+              memory: {{ .Values.collector.resources.limits.memory | quote }}
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: scripts
+              mountPath: /scripts
+              readOnly: true
+            - name: node-logs
+              mountPath: /var/log/pods
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ .Values.storage.pvc.name }}
+        - name: scripts
+          configMap:
+            name: {{ include "lognest.fullname" . }}-collector-script
+            defaultMode: 0755
+        - name: node-logs
+          hostPath:
+            path: /var/log/pods
+            type: Directory
+{{- end }}
