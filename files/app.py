@@ -1486,13 +1486,40 @@ def search_page():
               <thead>
                 <tr>
                   <th style="width:40px"><input type="checkbox" id="cb-all" onchange="toggleAll(this)"/></th>
-                  <th>Run</th><th>Namespace</th><th>Pod</th><th>Container</th><th>Size</th><th>Levels</th><th>Actions</th>
+                  <th onclick="sortTable(1)" style="cursor:pointer">Run ⇅</th>
+                  <th onclick="sortTable(2)" style="cursor:pointer">Namespace ⇅</th>
+                  <th onclick="sortTable(3)" style="cursor:pointer">Pod ⇅</th>
+                  <th onclick="sortTable(4)" style="cursor:pointer">Container ⇅</th>
+                  <th onclick="sortTable(5)" style="cursor:pointer">Size ⇅</th>
+                  <th onclick="sortTable(6)" style="cursor:pointer">Levels ⇅</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>{rows_html}</tbody>
             </table>
           </div>
-        </div>"""
+        </div>
+        <script>
+        var sortDir={{}};
+        function sortTable(col){{
+          var table=document.querySelector('.table-wrap table');
+          var tbody=table.querySelector('tbody');
+          var rows=Array.from(tbody.querySelectorAll('tr'));
+          sortDir[col]=!sortDir[col];
+          rows.sort(function(a,b){{
+            var aVal=a.cells[col]?a.cells[col].textContent.trim():'';
+            var bVal=b.cells[col]?b.cells[col].textContent.trim():'';
+            // Try numeric sort for size/levels columns
+            var aNum=parseFloat(aVal.replace(/[^0-9.]/g,''));
+            var bNum=parseFloat(bVal.replace(/[^0-9.]/g,''));
+            if(!isNaN(aNum)&&!isNaN(bNum)){{
+              return sortDir[col]?aNum-bNum:bNum-aNum;
+            }}
+            return sortDir[col]?aVal.localeCompare(bVal):bVal.localeCompare(aVal);
+          }});
+          rows.forEach(function(r){{tbody.appendChild(r);}});
+        }}
+        </script>"""
     elif pod_query or sel_ns:
         table = '<div class="empty-state"><p>No files match your search.</p></div>'
     else:
@@ -1538,7 +1565,11 @@ def view_multi():
 
         try:
             content = path.read_text(errors="replace")
-            for line in content.splitlines():
+            lines = content.splitlines()
+            # Limit to last 1000 lines per file for speed
+            if len(lines) > 1000:
+                lines = lines[-1000:]
+            for line in lines:
                 all_lines.append((line, i, short, color))
         except Exception:
             continue
