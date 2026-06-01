@@ -35,51 +35,48 @@ Designed for RKE2 clusters in air-gapped environments, LogNest requires no exter
 ## Architecture
 
 ```
-+-------------------------------------------------------------------+
-|                      Kubernetes Cluster                            |
-|                                                                   |
-|  +-------------------------------------------------------------+ |
-|  | Collector (CronJob or DaemonSet)                             | |
-|  |                                                              | |
-|  |  Phase 1: /var/log/pods     Phase 2: kubectl logs API        | |
-|  |  (hostPath, fast, local)    (multi-node safety net)          | |
-|  |         |                          |                         | |
-|  |         +----------+---------------+                         | |
-|  |                    |                                         | |
-|  |                    v                                         | |
-|  |            collect.py (Python)                               | |
-|  |            - 8 parallel threads                              | |
-|  |            - Byte-offset incremental                         | |
-|  |            - Rotation detection                              | |
-|  |            - 8MB chunked streaming                           | |
-|  +-------------------------+-----------------------------------+ |
-|                            |                                      |
-|                            v                                      |
-|  +-------------------------------------------------------------+ |
-|  | NFS PVC (150Gi, ReadWriteMany)                               | |
-|  |                                                              | |
-|  |  logs/            - raw .log files per collection run        | |
-|  |  logs_zip/        - compressed .tar.gz archives              | |
-|  |  .lognest_*       - state (offsets, epoch, SQLite index)     | |
-|  +-------------------------------------------------------------+ |
-|                            ^                                      |
-|                            |                                      |
-|  +-------------------------------------------------------------+ |
-|  | Web UI (Deployment)                                          | |
-|  |                                                              | |
-|  |  Flask + Gunicorn (pre-built Docker image)                   | |
-|  |  - Dashboard with stats + log viewer                         | |
-|  |  - Search across all runs (SQLite-powered)                   | |
-|  |  - Multi-pod merged view                                     | |
-|  |  - Download (single / multi-select / zip)                    | |
-|  |  - On-demand collection trigger                              | |
-|  +-------------------------------------------------------------+ |
-|                            |                                      |
-|  +-------------------------------------------------------------+ |
-|  | Service (ClusterIP:8080) --> Ingress (nginx)                 | |
-|  |                              lognest.example.com             | |
-|  +-------------------------------------------------------------+ |
-+-------------------------------------------------------------------+
+                    Every 4 hours (CronJob) or always (DaemonSet)
+                                    |
+                                    v
+    +-------------------------------------------------------+
+    |              COLLECTOR (Python, 8 threads)             |
+    |                                                       |
+    |  Phase 1: Read /var/log/pods (node disk, fast)        |
+    |  Phase 2: kubectl logs API (multi-node safety net)    |
+    |                                                       |
+    |  Features:                                            |
+    |  - Byte-offset incremental (only new data)            |
+    |  - Rotation detection (.gz + plain)                   |
+    |  - 8MB chunked streaming (constant memory)            |
+    |  - File splitting at 100MB                            |
+    +-------------------------------------------------------+
+                                    |
+                                    v
+    +-------------------------------------------------------+
+    |              NFS PVC (150Gi, ReadWriteMany)            |
+    |                                                       |
+    |  /logs/          raw .log files per run               |
+    |  /logs_zip/      compressed .tar.gz archives          |
+    |  /.lognest_*     state (offsets, epoch, SQLite)       |
+    +-------------------------------------------------------+
+                                    ^
+                                    |
+    +-------------------------------------------------------+
+    |              WEB UI (Flask + Gunicorn)                 |
+    |                                                       |
+    |  - Dashboard with stats + log viewer                  |
+    |  - Search across all runs (SQLite index)              |
+    |  - Multi-pod merged view (sorted by timestamp)        |
+    |  - Download: single / multi-select / zip              |
+    |  - On-demand collection trigger                       |
+    |  - Namespace filtering                                |
+    +-------------------------------------------------------+
+                                    |
+                                    v
+    +-------------------------------------------------------+
+    |  Service:8080 --> Ingress (nginx)                     |
+    |                   lognest.example.com                  |
+    +-------------------------------------------------------+
 ```
 
 ---
