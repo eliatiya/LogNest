@@ -35,55 +35,51 @@ Designed for RKE2 clusters in air-gapped environments, LogNest requires no exter
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────┐
-│                        Kubernetes Cluster                            │
-│                                                                     │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Mode: CronJob (single-node) OR DaemonSet (multi-node)      │   │
-│  │                                                              │   │
-│  │  ┌─────────────────────┐    ┌─────────────────────┐         │   │
-│  │  │  Phase 1            │    │  Phase 2            │         │   │
-│  │  │  /var/log/pods      │    │  kubectl logs API   │         │   │
-│  │  │  (hostPath mount)   │    │  (multi-node fill)  │         │   │
-│  │  └────────┬────────────┘    └────────┬────────────┘         │   │
-│  │           │                          │                       │   │
-│  │           └──────────┬───────────────┘                       │   │
-│  │                      ▼                                       │   │
-│  │           ┌─────────────────────┐                            │   │
-│  │           │  collect.py         │                            │   │
-│  │           │  • Byte offsets     │                            │   │
-│  │           │  • Rotation detect  │                            │   │
-│  │           │  • Parallel threads │                            │   │
-│  │           └──────────┬──────────┘                            │   │
-│  └──────────────────────┼───────────────────────────────────────┘   │
-│                         ▼                                           │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  NFS PVC (ReadWriteMany)                                     │   │
-│  │  ├── logs/           ← raw .log files per run                │   │
-│  │  ├── logs_zip/       ← compressed .tar.gz archives           │   │
-│  │  └── .lognest_*     ← state files (offsets, epoch, index)   │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-│                         ▲                                           │
-│  ┌──────────────────────┼───────────────────────────────────────┐   │
-│  │  Web UI (Deployment)  │                                       │   │
-│  │  ┌───────────────────┴──────────────────┐                    │   │
-│  │  │  Flask + Gunicorn                    │                    │   │
-│  │  │  • Dashboard / Stats                 │                    │   │
-│  │  │  • Log viewer with level filtering   │                    │   │
-│  │  │  • Search across all runs            │                    │   │
-│  │  │  • Download (single / multi / zip)   │                    │   │
-│  │  │  • On-demand trigger                 │                    │   │
-│  │  │  • SQLite index for fast queries     │                    │   │
-│  │  └───────────────────┬──────────────────┘                    │   │
-│  │                      │                                        │   │
-│  │  Service (ClusterIP:8080)                                     │   │
-│  └──────────────────────┼───────────────────────────────────────┘   │
-│                         ▼                                           │
-│  ┌──────────────────────────────────────────────────────────────┐   │
-│  │  Ingress (nginx)                                             │   │
-│  │  lognest.example.com → Service:8080                          │   │
-│  └──────────────────────────────────────────────────────────────┘   │
-└─────────────────────────────────────────────────────────────────────┘
++-------------------------------------------------------------------+
+|                      Kubernetes Cluster                            |
+|                                                                   |
+|  +-------------------------------------------------------------+ |
+|  | Collector (CronJob or DaemonSet)                             | |
+|  |                                                              | |
+|  |  Phase 1: /var/log/pods     Phase 2: kubectl logs API        | |
+|  |  (hostPath, fast, local)    (multi-node safety net)          | |
+|  |         |                          |                         | |
+|  |         +----------+---------------+                         | |
+|  |                    |                                         | |
+|  |                    v                                         | |
+|  |            collect.py (Python)                               | |
+|  |            - 8 parallel threads                              | |
+|  |            - Byte-offset incremental                         | |
+|  |            - Rotation detection                              | |
+|  |            - 8MB chunked streaming                           | |
+|  +-------------------------+-----------------------------------+ |
+|                            |                                      |
+|                            v                                      |
+|  +-------------------------------------------------------------+ |
+|  | NFS PVC (150Gi, ReadWriteMany)                               | |
+|  |                                                              | |
+|  |  logs/            - raw .log files per collection run        | |
+|  |  logs_zip/        - compressed .tar.gz archives              | |
+|  |  .lognest_*       - state (offsets, epoch, SQLite index)     | |
+|  +-------------------------------------------------------------+ |
+|                            ^                                      |
+|                            |                                      |
+|  +-------------------------------------------------------------+ |
+|  | Web UI (Deployment)                                          | |
+|  |                                                              | |
+|  |  Flask + Gunicorn (pre-built Docker image)                   | |
+|  |  - Dashboard with stats + log viewer                         | |
+|  |  - Search across all runs (SQLite-powered)                   | |
+|  |  - Multi-pod merged view                                     | |
+|  |  - Download (single / multi-select / zip)                    | |
+|  |  - On-demand collection trigger                              | |
+|  +-------------------------------------------------------------+ |
+|                            |                                      |
+|  +-------------------------------------------------------------+ |
+|  | Service (ClusterIP:8080) --> Ingress (nginx)                 | |
+|  |                              lognest.example.com             | |
+|  +-------------------------------------------------------------+ |
++-------------------------------------------------------------------+
 ```
 
 ---
