@@ -1,73 +1,94 @@
 # 🪺 LogNest
 
-> **Production-ready Kubernetes log collection, compression, and web dashboard — RKE2-ready, air-gap compatible.**
-
 [![Helm](https://img.shields.io/badge/Helm-v3-blue?logo=helm)](https://helm.sh)
-[![RKE2](https://img.shields.io/badge/RKE2-ready-green)](https://docs.rke2.io)
-[![Air-Gap](https://img.shields.io/badge/Air--Gap-supported-orange)](./images.txt)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![RKE2](https://img.shields.io/badge/RKE2-Ready-green?logo=kubernetes)](https://docs.rke2.io)
+[![Air-Gap](https://img.shields.io/badge/Air--Gap-Compatible-orange)](https://github.com/eliatiya/LogNest)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
+**Production-ready Kubernetes log collection, compression, and web dashboard — deployed as a single Helm chart.**
 
 ---
 
-## 📋 Overview
+## Overview
 
-LogNest is a Helm chart that deploys a complete log management solution on Kubernetes:
+LogNest is a Helm chart that deploys an automated log collection pipeline for Kubernetes clusters. It collects container logs incrementally from node filesystems and the kubectl API, compresses them into archives, and serves them through a modern web dashboard with search, filtering, and download capabilities.
 
-| Feature | Details |
-|---|---|
-| **Log Collection** | CronJob runs twice daily (configurable), collects logs from every container in every pod across all namespaces |
-| **Log Naming** | Files named `<namespace>__<pod>__<container>__<timestamp>.log` |
-| **Compression** | After each collection run, a `.tar.gz` archive is created automatically |
-| **Storage** | Single NFS-backed PVC with two subdirectories: `logs/` and `logs_zip/` |
-| **Retention** | Configurable month-based retention with automatic cleanup |
-| **Web Dashboard** | 3-tab UI: live log viewer, archive downloads, individual file downloads |
-| **Air-Gap** | All images configurable via private registry; helper script included |
-| **RKE2** | Uses `nginx` IngressClass (default in RKE2); no cloud-specific dependencies |
+Designed for RKE2 clusters in air-gapped environments, LogNest requires no external dependencies beyond NFS storage. It handles log rotation, tracks byte offsets for incremental collection, and provides capacity-based cleanup to prevent storage exhaustion.
+
+| Feature | Description |
+|---------|-------------|
+| **Incremental Collection** | Byte-offset tracking — only new log data is collected each cycle |
+| **Dual-Phase Collection** | Phase 1: node filesystem (`/var/log/pods`), Phase 2: kubectl API |
+| **Log Rotation Handling** | Detects rotated files (`.gz` + plain), avoids duplicates |
+| **Compression** | Each run is archived as `.tar.gz` for long-term storage |
+| **Web Dashboard** | Real-time stats, log viewer with level filtering, multi-file download |
+| **SQLite Index** | Instant UI queries without scanning NFS on every request |
+| **Air-Gap Ready** | No internet required at runtime; all images pre-bundled |
+| **Capacity Cleanup** | Auto-deletes oldest runs when PVC usage exceeds threshold |
+| **Gradual Retention** | Removes 1 oldest expired run per cycle (no sudden data loss) |
+| **Multi-Node Support** | DaemonSet mode for clusters with multiple worker nodes |
+| **On-Demand Collection** | Trigger immediate collection from the UI |
+| **RBAC Minimal** | Read-only access to pods/logs, no secrets in chart |
 
 ---
 
-## 🏗️ Architecture
+## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                     Kubernetes Cluster                   │
-│                                                         │
-│  ┌──────────────┐    ┌──────────────────────────────┐  │
-│  │  CronJob ×2  │───▶│  NFS PVC (100Gi)             │  │
-│  │  (collector) │    │  ├── logs/                   │  │
-│  └──────────────┘    │  │   └── <timestamp>/        │  │
-│                      │  │       └── ns__pod__c.log  │  │
-│  ┌──────────────┐    │  └── logs_zip/               │  │
-│  │  Deployment  │───▶│      └── lognest_<ts>.tar.gz │  │
-│  │  (Flask UI)  │    └──────────────────────────────┘  │
-│  └──────┬───────┘                                       │
-│         │                                               │
-│  ┌──────▼───────┐    ┌──────────────┐                  │
-│  │   Service    │───▶│   Ingress    │◀── Browser        │
-│  │  (ClusterIP) │    │  (nginx)     │                   │
-│  └──────────────┘    └──────────────┘                  │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                        Kubernetes Cluster                            │
+│                                                                     │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  Mode: CronJob (single-node) OR DaemonSet (multi-node)      │   │
+│  │                                                              │   │
+│  │  ┌─────────────────────┐    ┌─────────────────────┐         │   │
+│  │  │  Phase 1            │    │  Phase 2            │         │   │
+│  │  │  /var/log/pods      │    │  kubectl logs API   │         │   │
+│  │  │  (hostPath mount)   │    │  (multi-node fill)  │         │   │
+│  │  └────────┬────────────┘    └────────┬────────────┘         │   │
+│  │           │                          │                       │   │
+│  │           └──────────┬───────────────┘                       │   │
+│  │                      ▼                                       │   │
+│  │           ┌─────────────────────┐                            │   │
+│  │           │  collect.py         │                            │   │
+│  │           │  • Byte offsets     │                            │   │
+│  │           │  • Rotation detect  │                            │   │
+│  │           │  • Parallel threads │                            │   │
+│  │           └──────────┬──────────┘                            │   │
+│  └──────────────────────┼───────────────────────────────────────┘   │
+│                         ▼                                           │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  NFS PVC (ReadWriteMany)                                     │   │
+│  │  ├── logs/           ← raw .log files per run                │   │
+│  │  ├── logs_zip/       ← compressed .tar.gz archives           │   │
+│  │  └── .lognest_*     ← state files (offsets, epoch, index)   │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+│                         ▲                                           │
+│  ┌──────────────────────┼───────────────────────────────────────┐   │
+│  │  Web UI (Deployment)  │                                       │   │
+│  │  ┌───────────────────┴──────────────────┐                    │   │
+│  │  │  Flask + Gunicorn                    │                    │   │
+│  │  │  • Dashboard / Stats                 │                    │   │
+│  │  │  • Log viewer with level filtering   │                    │   │
+│  │  │  • Search across all runs            │                    │   │
+│  │  │  • Download (single / multi / zip)   │                    │   │
+│  │  │  • On-demand trigger                 │                    │   │
+│  │  │  • SQLite index for fast queries     │                    │   │
+│  │  └───────────────────┬──────────────────┘                    │   │
+│  │                      │                                        │   │
+│  │  Service (ClusterIP:8080)                                     │   │
+│  └──────────────────────┼───────────────────────────────────────┘   │
+│                         ▼                                           │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │  Ingress (nginx)                                             │   │
+│  │  lognest.example.com → Service:8080                          │   │
+│  └──────────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## 📦 Prerequisites
-
-| Requirement | Notes |
-|---|---|
-| Kubernetes 1.24+ | Tested on RKE2 |
-| Helm 3.x | `helm version` |
-| NFS server | Accessible from all cluster nodes |
-| `nfs-client` StorageClass | Already present in Rancher/RKE2 clusters |
-| `nginx` IngressClass | Default in RKE2 |
-
-### Install NFS Subdir External Provisioner (if not present)
-
-> RKE2 clusters managed by Rancher already have the `nfs-client` StorageClass available. No additional provisioner installation is needed.
-
----
-
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Clone the repository
 
@@ -76,20 +97,26 @@ git clone https://github.com/eliatiya/LogNest.git
 cd LogNest
 ```
 
-### 2. Configure `values.yaml`
+### 2. Configure values.yaml
 
-At minimum, set your NFS server details and ingress hostname:
+Edit `values.yaml` to match your environment:
 
 ```yaml
 storage:
-  nfsServer: "192.168.1.100"       # ← your NFS server IP
-  nfsPath: "/exports/lognest"      # ← your NFS export path
+  nfsServer: "10.0.0.50"          # Your NFS server IP
+  nfsPath: "/exports/lognest"     # NFS export path
 
 ingress:
-  host: "lognest.company.internal" # ← your desired hostname
+  host: "lognest.mycompany.com"   # Your ingress hostname
 ```
 
-### 3. Install
+### 3. Build the UI image (if not using Docker Hub)
+
+```bash
+./docker/build.sh registry.internal:5000
+```
+
+### 4. Install the chart
 
 ```bash
 helm install lognest . \
@@ -98,240 +125,443 @@ helm install lognest . \
   -f values.yaml
 ```
 
-> `--create-namespace` tells Helm to create the namespace itself (with correct ownership labels). If the namespace already exists from a previous attempt, delete it first:
-> ```bash
-> kubectl delete namespace lognest
-> ```
+### 5. Access the dashboard
 
-### 4. Access the dashboard
+```bash
+# Via ingress
+open https://lognest.mycompany.com
 
-Add the hostname to your DNS or `/etc/hosts`, then open:
-
-```
-http://lognest.company.internal
+# Or via port-forward
+kubectl port-forward svc/lognest-ui 8080:8080 -n lognest
+open http://localhost:8080
 ```
 
 ---
 
-## ✈️ Air-Gap Installation
+## Air-Gap Installation
 
-### Step 1 — On an internet-connected machine
+Complete guide for deploying LogNest in environments without internet access.
+
+### Step 1: Pull all images (internet-connected machine)
 
 ```bash
-# Make the script executable
-chmod +x scripts/pull-push-images.sh
-
-# Pull all required images and push to your private registry
-./scripts/pull-push-images.sh registry.internal:5000
+docker pull alpine/k8s:1.30.2
+docker pull eliezer1234/lognest-ui:1.0.0
 ```
 
-### Step 2 — Update `values.yaml`
+### Step 2: Save images to tar
+
+```bash
+docker save -o lognest-images.tar alpine/k8s:1.30.2 eliezer1234/lognest-ui:1.0.0
+```
+
+### Step 3: Package the Helm chart
+
+```bash
+helm package .
+# Creates: lognest-1.0.0.tgz
+```
+
+### Step 4: Transfer to air-gap machine
+
+Copy both files to the air-gapped environment:
+- `lognest-images.tar` (container images)
+- `lognest-1.0.0.tgz` (Helm chart)
+
+### Step 5: Load images
+
+```bash
+docker load -i lognest-images.tar
+```
+
+### Step 6: Push to private registry
+
+**Option A: Private registry (recommended)**
+
+```bash
+# Tag for your registry
+docker tag alpine/k8s:1.30.2 registry.internal:5000/alpine/k8s:1.30.2
+docker tag eliezer1234/lognest-ui:1.0.0 registry.internal:5000/eliezer1234/lognest-ui:1.0.0
+
+# Push
+docker push registry.internal:5000/alpine/k8s:1.30.2
+docker push registry.internal:5000/eliezer1234/lognest-ui:1.0.0
+```
+
+Then set in `values.yaml`:
 
 ```yaml
 global:
   imageRegistry: "registry.internal:5000"
-
-  # If your registry requires authentication:
-  imagePullSecrets:
-    - name: regcred
 ```
 
-> Create the pull secret if needed:
-> ```bash
-> kubectl create secret docker-registry regcred \
->   --docker-server=registry.internal:5000 \
->   --docker-username=<user> \
->   --docker-password=<password> \
->   -n lognest
-> ```
+**Option B: Local images (single-node / dev)**
 
-### Step 3 — Install (air-gap)
+If images are loaded directly on the node, set `imagePullPolicy: Never`:
+
+```yaml
+collector:
+  image:
+    pullPolicy: Never
+ui:
+  image:
+    pullPolicy: Never
+```
+
+### Step 7: Install from packaged chart
 
 ```bash
-helm install lognest . \
+helm install lognest lognest-1.0.0.tgz \
+  -f values.yaml \
   --namespace lognest \
-  --create-namespace \
-  -f values.yaml
+  --create-namespace
 ```
+
+> **Helper script:** You can also use `./scripts/pull-push-images.sh registry.internal:5000` to automate pulling, tagging, and pushing all images listed in `images.txt`.
 
 ---
 
-## ⚙️ Configuration Reference
+## Configuration Reference
 
-### Core Settings
+### Global
 
-| Parameter | Default | Description |
-|---|---|---|
-| `global.imageRegistry` | `""` | Private registry prefix for all images |
-| `global.imagePullSecrets` | `[]` | Image pull secrets |
-| `namespace.name` | `lognest` | Namespace to deploy into |
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `global.imageRegistry` | Private registry prefix for all images | `""` |
+| `global.imagePullSecrets` | Array of image pull secret names | `[]` |
+| `namespace.name` | Namespace to deploy into | `lognest` |
 
-### Log Collector
+### Collector
 
-| Parameter | Default | Description |
-|---|---|---|
-| `collector.schedule1` | `"0 2 * * *"` | First daily collection (cron format, UTC) |
-| `collector.schedule2` | `"0 14 * * *"` | Second daily collection (cron format, UTC) |
-| `collector.allNamespaces` | `true` | Collect from all namespaces |
-| `collector.namespaces` | `[]` | Specific namespaces (when `allNamespaces: false`) |
-| `collector.retentionMonths` | `1` | Months of logs/zips to retain |
-| `collector.image.repository` | `bitnami/kubectl` | Collector image |
-| `collector.image.tag` | `1.29.3` | Collector image tag |
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `collector.mode` | Deployment mode: `cronjob` or `daemonset` | `cronjob` |
+| `collector.enableApiPhase` | Enable Phase 2 kubectl API collection | `false` |
+| `collector.schedule1` | Primary cron schedule | `"0 */4 * * *"` |
+| `collector.schedule2` | Secondary cron schedule (empty to disable) | `""` |
+| `collector.allNamespaces` | Collect from all namespaces | `true` |
+| `collector.namespaces` | Specific namespaces (when `allNamespaces: false`) | `[]` |
+| `collector.retentionMonths` | Months to retain logs before deletion | `1` |
+| `collector.capacityThresholdPercent` | Delete oldest runs when PVC usage exceeds this % | `80` |
+| `collector.image.repository` | Collector image repository | `alpine/k8s` |
+| `collector.image.tag` | Collector image tag | `"1.30.2"` |
+| `collector.image.pullPolicy` | Image pull policy | `IfNotPresent` |
+| `collector.resources.requests.cpu` | CPU request | `"100m"` |
+| `collector.resources.requests.memory` | Memory request | `"256Mi"` |
+| `collector.resources.limits.cpu` | CPU limit | `"1000m"` |
+| `collector.resources.limits.memory` | Memory limit | `"1Gi"` |
+| `collector.nodeSelector` | Node selector for collector pods | `{}` |
+| `collector.tolerations` | Tolerations (includes control-plane by default) | See values.yaml |
+| `collector.affinity` | Affinity rules | `{}` |
 
 ### Storage
 
-| Parameter | Default | Description |
-|---|---|---|
-| `storage.nfsServer` | `192.168.1.100` | NFS server address |
-| `storage.nfsPath` | `/exports/lognest` | NFS export path |
-| `storage.storageClassName` | `nfs-client` | StorageClass name (Rancher/RKE2 built-in) |
-| `storage.pvc.size` | `100Gi` | PVC size |
-| `storage.logsDir` | `logs` | Subdirectory for raw logs |
-| `storage.logsZipDir` | `logs_zip` | Subdirectory for compressed archives |
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `storage.nfsServer` | NFS server address | `"127.0.0.1"` |
+| `storage.nfsPath` | NFS exported path | `"/exports/lognest"` |
+| `storage.storageClassName` | StorageClass name (NFS provisioner) | `nfs-storage` |
+| `storage.pvc.name` | PVC name | `pvc-lognest` |
+| `storage.pvc.size` | PVC size | `150Gi` |
+| `storage.pvc.accessMode` | PVC access mode | `ReadWriteMany` |
+| `storage.pvc.nfsSubPath` | NFS subdirectory name | `"lognest-data-pvc"` |
+| `storage.logsDir` | Subdirectory for raw logs inside PVC | `"logs"` |
+| `storage.logsZipDir` | Subdirectory for archives inside PVC | `"logs_zip"` |
 
-### Web UI
+### UI
 
-| Parameter | Default | Description |
-|---|---|---|
-| `ui.replicaCount` | `1` | Number of UI replicas |
-| `ui.image.repository` | `python` | UI image |
-| `ui.image.tag` | `3.11-slim` | UI image tag |
-| `ui.service.port` | `8080` | Service port |
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `ui.replicaCount` | Number of UI replicas | `1` |
+| `ui.image.repository` | UI image repository | `eliezer1234/lognest-ui` |
+| `ui.image.tag` | UI image tag | `"1.0.0"` |
+| `ui.image.pullPolicy` | Image pull policy | `IfNotPresent` |
+| `ui.service.type` | Service type | `ClusterIP` |
+| `ui.service.port` | Service port | `8080` |
+| `ui.resources.requests.cpu` | CPU request | `"100m"` |
+| `ui.resources.requests.memory` | Memory request | `"128Mi"` |
+| `ui.resources.limits.cpu` | CPU limit | `"500m"` |
+| `ui.resources.limits.memory` | Memory limit | `"512Mi"` |
+| `ui.nodeSelector` | Node selector | `{}` |
+| `ui.tolerations` | Tolerations (includes control-plane by default) | See values.yaml |
+| `ui.affinity` | Affinity rules | `{}` |
 
 ### Ingress
 
-| Parameter | Default | Description |
-|---|---|---|
-| `ingress.enabled` | `true` | Enable ingress |
-| `ingress.className` | `nginx` | IngressClass (RKE2 default) |
-| `ingress.host` | `lognest.example.com` | Hostname |
-| `ingress.tlsSecret` | `""` | TLS secret name (leave empty for HTTP) |
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `ingress.enabled` | Enable ingress resource | `true` |
+| `ingress.className` | Ingress class name | `"nginx"` |
+| `ingress.host` | Ingress hostname | `"lognest.example.com"` |
+| `ingress.tlsSecret` | TLS secret name (empty to disable TLS) | `""` |
+| `ingress.annotations` | Ingress annotations | See values.yaml |
+
+### ServiceAccount
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `serviceAccount.create` | Create a ServiceAccount | `true` |
+| `serviceAccount.name` | ServiceAccount name | `lognest` |
+
+### Images (Air-Gap Overrides)
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `images.collector.repository` | Collector image override | `alpine/k8s` |
+| `images.collector.tag` | Collector tag override | `"1.30.2"` |
+| `images.ui.repository` | UI image override | `eliezer1234/lognest-ui` |
+| `images.ui.tag` | UI tag override | `"1.0.0"` |
 
 ---
 
-## 🖥️ Dashboard Tabs
+## How It Works
 
-### Tab 1 — 📊 Dashboard
-- Select a collection run by date/time
-- Select a specific pod/container
-- Filter log lines by level: **All / Error / Warning / Info / Debug**
-- Color-coded log output (errors in red, warnings in yellow, etc.)
+### Incremental Collection (Byte Offsets)
 
-### Tab 2 — 📦 Downloads
-- Lists all compressed `.tar.gz` archives by date
-- One-click download of any archive
+LogNest tracks the byte offset of each active log file (`0.log`) between collection runs. On the next run, it seeks to the saved offset and reads only new data. This avoids re-collecting gigabytes of already-processed logs.
 
-### Tab 3 — 📄 Files
-- Browse individual log files within a specific run
-- Download any single log file directly
+State is persisted in `/data/.lognest_offsets` (JSON map of file path → byte position).
+
+### Log Rotation Handling
+
+Kubernetes rotates container logs (e.g., `0.log` → `0.log.20240101-120000.gz`). LogNest:
+1. Detects rotated files (both `.gz` compressed and plain text)
+2. Applies the saved offset to the most recently rotated file (since it was the active file before rotation)
+3. Reads the new active `0.log` from the beginning
+4. Detects size-based rotation (file smaller than saved offset) and resets
+
+### Phase 1 (Node Filesystem) vs Phase 2 (kubectl API)
+
+- **Phase 1** reads directly from `/var/log/pods` via hostPath mount. This is fast, supports incremental offsets, and works for all containers on the local node.
+- **Phase 2** uses `kubectl logs` API to collect from pods on other nodes (multi-node clusters). It skips containers already collected in Phase 1 to avoid duplicates. Also fetches `--previous` logs for rotated containers.
+
+Set `collector.enableApiPhase: true` for multi-node clusters.
+
+### SQLite Index
+
+After each collection run, the collector indexes metadata (filenames, sizes, line counts, error/warn/info/debug counts) into a SQLite database on the PVC. The UI queries this index for instant dashboard stats and file listings instead of scanning NFS on every request.
+
+### Gradual Retention
+
+When runs expire (older than `retentionMonths`), LogNest deletes only the **1 oldest** expired run per collection cycle. This prevents sudden bulk deletion and spreads I/O over time.
+
+### Capacity-Based Cleanup
+
+If total data on the PVC exceeds `capacityThresholdPercent` of the PVC size, the collector deletes the oldest runs (both raw logs and archives) until usage drops below the threshold.
 
 ---
 
-## 📁 Log File Naming Convention
+## UI Tabs
 
-```
-<namespace>__<pod-name>__<container-name>__<YYYY-MM-DD_HH-MM-SS>.log
-```
-
-Example:
-```
-production__api-deployment-7d9f8b-xk2p9__api__2026-04-19_02-00-01.log
-```
+| Tab | Description |
+|-----|-------------|
+| **Dashboard** | Overview stats (total runs, files, archives, storage used, last run time). Log viewer with level-based highlighting and filtering (error/warn/info/debug). Run selector to browse historical collections. |
+| **Downloads** | Browse and download compressed `.tar.gz` archives of past collection runs. |
+| **Files** | Browse raw `.log` files per run. View file sizes, select multiple files for bulk download as ZIP. |
+| **Search** | Full-text search across all collected log files. Filter by namespace, pod, or container. |
+| **On-Demand** | Trigger an immediate collection run from the UI without waiting for the cron schedule. View history of on-demand runs. |
 
 ---
 
-## 🔄 Retention Policy
+## Collector Modes
 
-Logs and zip archives older than `collector.retentionMonths` months are automatically deleted after each collection run. Default is **1 month**.
+| Mode | Value | Best For | How It Works |
+|------|-------|----------|--------------|
+| **CronJob** | `collector.mode: cronjob` | Single-node clusters, RKE2 single-server | A single pod runs on the configured schedule. Mounts `/var/log/pods` from the node. |
+| **DaemonSet** | `collector.mode: daemonset` | Multi-node clusters | One collector pod per node. Each pod collects from its own node's `/var/log/pods`. Eliminates the need for Phase 2 API calls. |
 
-To change retention to 3 months:
+**When to use CronJob:**
+- Single-node or small clusters
+- You want minimal resource usage (pod only exists during collection)
+- Combined with `enableApiPhase: true` for multi-node coverage via API
+
+**When to use DaemonSet:**
+- Multi-node clusters (3+ nodes)
+- You want direct filesystem access on every node (faster, no API overhead)
+- Large clusters where kubectl API collection would be slow
+
+---
+
+## Troubleshooting
+
+### Pod can't schedule
+
+**Symptom:** Collector or UI pod stuck in `Pending`.
+
+**Fix:** The chart includes tolerations for control-plane nodes by default. If your nodes have additional taints, add them:
+
 ```yaml
 collector:
-  retentionMonths: 3
+  tolerations:
+    - key: "your-custom-taint"
+      operator: "Exists"
+      effect: "NoSchedule"
 ```
 
-### Capacity-based cleanup
+### PVC not binding
 
-If disk usage exceeds `collector.capacityThresholdPercent` (default **80%**), the oldest runs are deleted one by one until usage drops below the threshold — before time-based retention runs. This ensures the newest logs are always preserved even during log bursts.
+**Symptom:** PVC stays in `Pending` state.
 
-### Data persistence across uninstall/reinstall
+**Fix:**
+1. Verify the NFS server is reachable: `showmount -e <nfs-server-ip>`
+2. Verify the StorageClass exists: `kubectl get sc nfs-storage`
+3. Verify the NFS path exists and has correct permissions (at least `755`)
+4. Check the NFS provisioner logs: `kubectl logs -l app=nfs-subdir-external-provisioner`
 
-The PVC is **never deleted** by Helm uninstall. After first install, pin the PV name in `values.yaml` so reinstalls always bind to the same NFS directory:
+### UI slow to load
 
-```bash
-# Get the PV name after first install
-kubectl get pvc lognest-data -n lognest -o jsonpath='{.spec.volumeName}'
-# e.g. pvc-012e83b5-ecff-4e19-b404-e5353854aaf0
-```
+**Symptom:** Dashboard takes several seconds to render.
 
-```yaml
-# values.yaml
-storage:
-  pvc:
-    volumeName: "pvc-012e83b5-ecff-4e19-b404-e5353854aaf0"
-```
+**Fix:** The SQLite index may be missing or corrupted. Trigger a new collection run (On-Demand tab) to rebuild the index. Alternatively, delete `.lognest_index.db` from the PVC and restart the UI pod.
 
-Now `helm uninstall` + `helm install` will always reattach to the same NFS directory and all existing logs are preserved.
+### Logs missing
+
+**Symptom:** Expected container logs not appearing in collection runs.
+
+**Fix:**
+1. Check Phase 1 output: `kubectl logs -l job-name=<job> -n lognest | grep "Phase 1"`
+2. Verify `/var/log/pods` is mounted (hostPath in the pod spec)
+3. For multi-node clusters, ensure `enableApiPhase: true` or use DaemonSet mode
+4. Check if the container's namespace is included (if `allNamespaces: false`)
+
+### Job failed
+
+**Symptom:** CronJob or init job shows `BackoffLimitExceeded`.
+
+**Fix:**
+1. Check job logs: `kubectl logs -l job-name=<job-name> -n lognest`
+2. Increase resources if OOMKilled:
+   ```yaml
+   collector:
+     resources:
+       limits:
+         memory: "2Gi"
+   ```
+3. Check NFS connectivity (most common cause of job failures)
+4. Verify ServiceAccount and ClusterRole exist: `kubectl get sa,clusterrole -l app.kubernetes.io/name=lognest`
 
 ---
 
-## 🛠️ Useful Commands
+## Development
+
+### Build the UI image
 
 ```bash
-# Check collector CronJob status
-kubectl get cronjobs -n lognest
+# Build locally
+./docker/build.sh
 
-# View last collection job logs
-kubectl logs -n lognest -l lognest/component=collector --tail=50
-
-# Check UI pod status
-kubectl get pods -n lognest -l lognest/component=ui
-
-# Manually trigger a collection run
-kubectl create job --from=cronjob/lognest-collector-1 manual-run -n lognest
-
-# Uninstall
-helm uninstall lognest -n lognest
+# Build and push to a registry
+./docker/build.sh registry.internal:5000
 ```
+
+The Dockerfile uses `python:3.11-slim` with Flask 3.0.3 and Gunicorn 22.0.0. The app source (`files/app.py`) is mounted via ConfigMap at runtime, but a default copy is baked into the image.
+
+### Run QA tests
+
+```bash
+chmod +x tests/qa-test.sh
+./tests/qa-test.sh
+```
+
+The QA suite performs a full lifecycle test:
+1. Clean install
+2. Verify UI, PVC, CronJobs, init job
+3. Test all UI endpoints
+4. Validate incremental collection (Run2 < Run1)
+5. On-demand trigger
+6. Download endpoints
+7. State persistence
+8. Uninstall & data preservation
+9. Reinstall reads existing data
+
+Requires: `kubectl`, `helm`, cluster access, and NFS path accessible from the test machine.
+
+### Modify the collector
+
+The collector script is at `files/collect.py` and is mounted into pods via ConfigMap. After editing:
+
+1. Update the ConfigMap: `helm upgrade lognest . -n lognest -f values.yaml`
+2. Trigger a test run: use the On-Demand tab or create a job manually:
+   ```bash
+   kubectl create job --from=cronjob/lognest-collector-1 test-run -n lognest
+   ```
+3. Check logs: `kubectl logs -l job-name=test-run -n lognest`
 
 ---
 
-## 📂 Repository Structure
+## Repository Structure
 
 ```
 LogNest/
-├── Chart.yaml                        # Chart metadata
-├── values.yaml                       # All configurable values
-├── images.txt                        # Air-gap image list
-├── README.md                         # This file
+├── Chart.yaml                      # Helm chart metadata (v1.0.0)
+├── values.yaml                     # All configurable parameters
+├── README.md                       # This file
+├── images.txt                      # Air-gap image list
+├── push.ps1                        # Windows push helper
+├── docker/
+│   ├── Dockerfile.ui               # UI image (python:3.11-slim + Flask + Gunicorn)
+│   └── build.sh                    # Build & push script
+├── files/
+│   ├── app.py                      # Web UI application (Flask)
+│   ├── collect.py                  # Log collector (incremental, parallel)
+│   └── index_db.py                 # SQLite index for fast UI queries
 ├── scripts/
-│   └── pull-push-images.sh           # Air-gap image helper
-└── templates/
-    ├── _helpers.tpl                  # Template helpers
-    ├── namespace.yaml
-    ├── serviceaccount.yaml
-    ├── clusterrole.yaml
-    ├── clusterrolebinding.yaml
-    ├── storageclass.yaml
-    ├── pvc.yaml
-    ├── configmap-collector.yaml      # Log collection shell script
-    ├── configmap-ui.yaml             # Flask web app
-    ├── cronjob.yaml                  # Two scheduled collectors
-    ├── deployment-ui.yaml            # Web dashboard deployment
-    ├── service-ui.yaml
-    └── ingress.yaml
+│   └── pull-push-images.sh         # Air-gap image pull/tag/push helper
+├── templates/
+│   ├── _helpers.tpl                # Helm template helpers
+│   ├── clusterrole.yaml            # RBAC: read pods/logs, create jobs
+│   ├── clusterrolebinding.yaml     # Bind ClusterRole to ServiceAccount
+│   ├── configmap-collector.yaml    # Mounts collect.py + index_db.py
+│   ├── configmap-ui.yaml           # Mounts app.py + index_db.py
+│   ├── cronjob.yaml                # Collector CronJob (mode=cronjob)
+│   ├── daemonset-collector.yaml    # Collector DaemonSet (mode=daemonset)
+│   ├── deployment-ui.yaml          # Web UI Deployment
+│   ├── ingress.yaml                # Ingress resource
+│   ├── job-cleanup-pv.yaml         # Pre-delete hook: cleanup PV
+│   ├── job-init-collect.yaml       # Post-install hook: initial collection
+│   ├── pvc.yaml                    # PersistentVolumeClaim (NFS)
+│   ├── service-ui.yaml             # ClusterIP Service for UI
+│   └── serviceaccount.yaml         # ServiceAccount
+├── tests/
+│   └── qa-test.sh                  # Full lifecycle QA test suite
+└── preview/
+    └── index.html                  # Static preview of UI design
 ```
 
 ---
 
-## 🔐 Security Notes
+## Security
 
-- The collector uses a dedicated `ServiceAccount` with a `ClusterRole` scoped to **read-only** access on `pods`, `pods/log`, and `namespaces`.
-- No secrets are stored in the chart — credentials (registry, NFS) are provided via values.
-- The UI is read-only — it only serves files from the NFS mount.
+### RBAC
+
+LogNest follows the principle of least privilege:
+
+- **Pods/Logs** — `get`, `list` only (read-only access to pod metadata and logs)
+- **Namespaces** — `get`, `list` (to enumerate namespaces for collection)
+- **PersistentVolumeClaims** — `get`, `list` (wait-for-PVC init container)
+- **Jobs** — `get`, `list`, `create`, `delete` (on-demand trigger from UI)
+- **CronJobs** — `get`, `list` (UI displays schedule info)
+
+No `write`, `patch`, or `update` access to pods, deployments, or secrets.
+
+### No Secrets in Chart
+
+The chart does not create or manage any Secret resources. If your private registry requires authentication, create the pull secret separately and reference it via `global.imagePullSecrets`.
+
+### NFS Permissions
+
+- The PVC directory should be owned by the container runtime user (typically UID 0 or 1000)
+- Recommended permissions: `755` for directories, `644` for files
+- The collector writes state files (`.lognest_offsets`, `.lognest_last_collect`, `.lognest_index.db`) to the PVC root
+
+### Network
+
+- The UI listens only on port 8080 within the cluster (ClusterIP service)
+- External access is controlled via Ingress — configure TLS via `ingress.tlsSecret`
+- No outbound network calls are made by any component
 
 ---
 
-## 📄 License
+## License
 
-MIT © [eliatiya](https://github.com/eliatiya)
+[MIT](https://opensource.org/licenses/MIT) © [eliatiya](https://github.com/eliatiya)
