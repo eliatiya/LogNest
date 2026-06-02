@@ -52,6 +52,7 @@ spec:
               imagePullPolicy: {{ $root.Values.collector.image.pullPolicy }}
               command:
                 - python3
+                - -u
                 - /scripts/collect.py
               env:
                 - name: LOGS_DIR
