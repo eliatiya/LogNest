@@ -1308,7 +1308,9 @@ def search_page():
     sel_ns = request.args.get("ns", "").strip()
 
     results = []
-    if pod_query or sel_ns:
+    # Run search if any filter is provided (pod text, namespace, or date range)
+    has_filter = pod_query or sel_ns or date_from or date_to
+    if has_filter:
         # Query SQLite for matching files across all runs
         if _use_index:
             try:
@@ -1425,7 +1427,7 @@ def search_page():
       </div>
     </div>"""
 
-    if (pod_query or sel_ns) and results:
+    if has_filter and results:
         rows_html = ""
         for r in results:
             sz = _human_size(r["size_bytes"])
@@ -1520,7 +1522,7 @@ def search_page():
           rows.forEach(function(r){{tbody.appendChild(r);}});
         }}
         </script>"""
-    elif pod_query or sel_ns:
+    elif has_filter:
         table = '<div class="empty-state"><p>No files match your search.</p></div>'
     else:
         table = """<div class="empty-state">
