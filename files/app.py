@@ -1,7 +1,57 @@
 #!/usr/bin/env python3
 """
 LogNest Web UI — Production Ready
+==================================
+
+A single-file Flask web application that serves the LogNest log viewer UI.
+Deployed as a ConfigMap-mounted file inside a Kubernetes pod (cannot be split
+into multiple files due to Helm chart ConfigMap constraints).
+
+Architecture
+------------
+- **Data layer**: Reads collected log files from a shared PVC (NFS mount).
+  An optional SQLite index (index_db.py) provides instant queries; the app
+  gracefully falls back to filesystem scanning when the index is unavailable.
+- **Caching**: In-memory TTL-based cache (60 s) avoids repeated NFS directory
+  scans on every request.
+- **Template**: A single HTML template (PAGE) with embedded CSS/JS is rendered
+  via Jinja-style string formatting.  The JS manages multi-select state in
+  sessionStorage so selections survive page navigation.
+- **On-Demand Collection**: The /collect page can programmatically create a
+  Kubernetes Job (using the in-cluster API) to trigger immediate log collection
+  outside the CronJob schedule.
+
+Tabs / Pages
+------------
+1. Dashboard  — Select run → pod → view logs with level/search filters
+2. Downloads  — Browse and download compressed .tar.gz archives
+3. Files      — Browse individual log files per run with namespace filtering
+4. Search     — Cross-run search by pod/namespace/date with SQLite backing
+5. On-Demand  — Trigger immediate log collection via K8s Job API
+
+Navigation Guide (approximate line numbers)
+--------------------------------------------
+  ~Line   40  │ Imports & Configuration
+  ~Line   60  │ Helpers & Caching (get_runs, get_log_files, get_zips, etc.)
+  ~Line  130  │ Stats (get_stats)
+  ~Line  175  │ HTML Template (PAGE) — CSS, header, nav, selection bar, JS
+  ~Line  780  │ Page Renderer (render_page)
+  ~Line  795  │ Route: Dashboard        GET  /
+  ~Line  990  │ Route: Downloads        GET  /downloads
+  ~Line 1095  │ Route: Files            GET  /files
+  ~Line 1230  │ Route: Multi-Download   POST /download/multi
+  ~Line 1270  │ Route: API & Health     GET  /healthz, /api/stats
+  ~Line 1280  │ Route: Downloads (file) GET  /download/zip/<f>, /download/log/<r>/<f>
+  ~Line 1300  │ Route: Search           GET  /search
+  ~Line 1540  │ Route: View Multi       POST /view-multi
+  ~Line 1670  │ Route: On-Demand        GET  /collect, POST /collect/trigger
+  ~Line 1845  │ Main entry point
 """
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  IMPORTS & CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+
 import os, re, io, zipfile, html as _html, json as _json, time as _time
 from pathlib import Path
 from datetime import datetime
@@ -13,18 +63,27 @@ import logging
 # Only log non-2xx responses
 @app.after_request
 def log_errors(response):
+    """After-request hook: logs a warning for any 4xx/5xx response."""
     if response.status_code >= 400:
         app.logger.warning(f"{request.method} {request.path} → {response.status_code}")
     return response
 
+# Paths configured via environment variables (set in the Helm deployment)
 LOGS_DIR = Path(os.environ.get("LOGS_DIR", "/data/logs"))
 ZIP_DIR  = Path(os.environ.get("ZIP_DIR",  "/data/logs_zip"))
 
-# ------------------------------------------------------------------ helpers
-_cache = {"runs": None, "runs_ts": 0, "zips": None, "zips_ts": 0}
-CACHE_TTL = 60  # seconds
+# ═══════════════════════════════════════════════════════════════════════════════
+#  HELPERS & CACHING
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# Try to use SQLite index for instant queries
+# In-memory TTL cache to avoid expensive NFS directory scans on every request.
+# Keys are added dynamically (e.g. "files_<run>") for per-run file lists.
+_cache = {"runs": None, "runs_ts": 0, "zips": None, "zips_ts": 0}
+CACHE_TTL = 60  # seconds before cache entries are refreshed
+
+# Try to use SQLite index for instant queries — the index is built by
+# index_db.py which runs as a CronJob sidecar.  If the DB is missing or
+# the module fails to import, we silently fall back to NFS scanning.
 _use_index = False
 try:
     import sys as _sys
@@ -36,6 +95,15 @@ except Exception:
     pass
 
 def get_runs():
+    """
+    Return a list of collection run directory names, newest first.
+
+    Attempts SQLite index first for O(1) lookup; falls back to NFS
+    directory listing with a 60-second TTL cache.
+
+    Returns:
+        list[str]: Run names (e.g. ["2026-05-18_14-00-00", ...])
+    """
     if _use_index:
         try:
             rows = query_runs(limit=9999)
@@ -54,10 +122,21 @@ def get_runs():
     return result
 
 def get_log_files(run=None):
+    """
+    Return sorted list of .log file Path objects for a given run.
+
+    Uses a per-run cache key ("files_<run>") with the same 60 s TTL.
+
+    Args:
+        run: Name of the collection run directory (optional).
+
+    Returns:
+        list[Path]: Sorted .log files inside the run directory.
+    """
     base = LOGS_DIR / run if run else LOGS_DIR
     if not base.exists():
         return []
-    # Cache per-run file list for 60s
+    # Cache per-run file list for 60s to avoid repeated glob on NFS
     cache_key = f"files_{run}"
     now = _time.time()
     if cache_key in _cache and (now - _cache.get(f"{cache_key}_ts", 0)) < CACHE_TTL:
@@ -68,6 +147,14 @@ def get_log_files(run=None):
     return result
 
 def get_zips():
+    """
+    Return available .tar.gz archive files from ZIP_DIR, newest first.
+
+    Cached for 60 seconds.
+
+    Returns:
+        list[Path]: Sorted archive paths.
+    """
     now = _time.time()
     if _cache["zips"] is not None and (now - _cache["zips_ts"]) < CACHE_TTL:
         return _cache["zips"]
@@ -78,6 +165,8 @@ def get_zips():
     _cache["zips_ts"] = now
     return result
 
+# Pre-compiled regex patterns for log-level filtering.
+# Used by the dashboard viewer and the level badge counts.
 LEVEL_PATTERNS = {
     "error":   re.compile(r'\berror\b',      re.IGNORECASE),
     "warning": re.compile(r'\bwarn(ing)?\b', re.IGNORECASE),
@@ -86,6 +175,16 @@ LEVEL_PATTERNS = {
 }
 
 def filter_lines(text, level):
+    """
+    Filter log text to only include lines matching the given severity level.
+
+    Args:
+        text:  Raw log text (newline-separated).
+        level: One of "error", "warning", "info", "debug", or "all"/None.
+
+    Returns:
+        str: Filtered text containing only matching lines.
+    """
     if not level or level == "all":
         return text
     pat = LEVEL_PATTERNS.get(level)
@@ -94,16 +193,39 @@ def filter_lines(text, level):
     return "\n".join(line for line in text.splitlines() if pat.search(line))
 
 def _human_size(size):
+    """
+    Convert a byte count to a human-readable string (B, KB, MB, GB, TB).
+
+    Args:
+        size: File size in bytes.
+
+    Returns:
+        str: e.g. "14.3 MB"
+    """
     for unit in ["B", "KB", "MB", "GB"]:
         if size < 1024:
             return f"{size:.1f} {unit}"
         size /= 1024
     return f"{size:.1f} TB"
 
-# ------------------------------------------------------------------ stats
+# ═══════════════════════════════════════════════════════════════════════════════
+#  STATS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Separate cache for dashboard statistics (independent TTL lifecycle).
 _stats_cache = {"data": None, "ts": 0}
 
 def get_stats():
+    """
+    Compute aggregate statistics for the dashboard header cards.
+
+    Prefers the SQLite index (query_stats) for accuracy and speed.
+    Falls back to a lightweight count based on get_runs().
+
+    Returns:
+        dict: Keys — runs (int), files (int), zips (int),
+              storage (str, human-readable), last_run (str).
+    """
     now = _time.time()
     if _stats_cache["data"] and (now - _stats_cache["ts"]) < CACHE_TTL:
         return _stats_cache["data"]
@@ -124,7 +246,7 @@ def get_stats():
         except Exception:
             pass
 
-    # Fallback
+    # Fallback — only run count is reliably available without full scan
     runs = get_runs()
     result = {
         "runs": len(runs),
@@ -137,7 +259,25 @@ def get_stats():
     _stats_cache["ts"] = now
     return result
 
-# ------------------------------------------------------------------ HTML base
+# ═══════════════════════════════════════════════════════════════════════════════
+#  HTML TEMPLATE (PAGE)
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Single-page HTML shell with:
+#   • Dark theme CSS with CSS variables for easy customization
+#   • Sticky header with tab navigation
+#   • Stats grid, card components, table styles, log viewer pre block
+#   • Multi-select floating action bar (selection bar)
+#   • sessionStorage-backed selection persistence across page reloads
+#   • Client-side log colorizing (level-based highlighting)
+#   • Ctrl+K keyboard shortcut to focus the search input
+#
+# Template placeholders (Python str.format):
+#   {title_suffix}  — appended to <title>
+#   {a_dash}, {a_dl}, {a_files}, {a_collect}, {a_search} — nav "active" class
+#   {body}          — page-specific content injected per route
+# ═══════════════════════════════════════════════════════════════════════════════
+
 PAGE = """<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -583,6 +723,10 @@ tr.selected td:first-child{{border-left:2px solid var(--accent)}}
 </div>
 
 <script>
+// ─── Selection state ───────────────────────────────────────────────────────
+// selectedItems is a dict keyed by "run|file" storing {run, file, type}.
+// It persists across page navigations via sessionStorage so users can
+// select files from different pages and batch-download them.
 var selectedItems = {{}};
 
 function toast(msg, type) {{
@@ -596,6 +740,7 @@ function toast(msg, type) {{
 var STORE_KEY = 'lognest_sel';
 
 function loadSelection() {{
+  // Restore selection dict from sessionStorage (survives page nav, cleared on tab close)
   try {{
     var raw = sessionStorage.getItem(STORE_KEY);
     selectedItems = raw ? JSON.parse(raw) : {{}};
@@ -603,11 +748,13 @@ function loadSelection() {{
 }}
 
 function saveSelection() {{
+  // Persist current selection to sessionStorage
   try {{ sessionStorage.setItem(STORE_KEY, JSON.stringify(selectedItems)); }}
   catch(e) {{}}
 }}
 
 function restoreCheckboxes() {{
+  // After page load, re-check any checkboxes that match persisted selection
   document.querySelectorAll('.row-cb').forEach(function(cb) {{
     var key = cb.dataset.run + '|' + cb.dataset.file;
     if (selectedItems[key]) {{
@@ -620,6 +767,7 @@ function restoreCheckboxes() {{
 }}
 
 function toggleRow(cb) {{
+  // Toggle a single row's selection state
   var row = cb.closest('tr');
   var key = cb.dataset.run + '|' + cb.dataset.file;
   if (cb.checked) {{
@@ -635,6 +783,7 @@ function toggleRow(cb) {{
 }}
 
 function syncHeaderCb() {{
+  // Sync the "select all" header checkbox: checked, unchecked, or indeterminate
   var all = document.querySelectorAll('.row-cb');
   var hcb = document.getElementById('cb-all');
   if (!hcb || !all.length) return;
@@ -644,6 +793,7 @@ function syncHeaderCb() {{
 }}
 
 function toggleAll(masterCb) {{
+  // Select or deselect all visible rows based on master checkbox state
   document.querySelectorAll('.row-cb').forEach(function(cb) {{
     cb.checked = masterCb.checked;
     var row = cb.closest('tr');
@@ -681,6 +831,7 @@ function deselectAll() {{
 function clearAll() {{ deselectAll(); }}
 
 function updateBar() {{
+  // Show/hide the floating selection bar and toggle "View Together" visibility
   var keys  = Object.keys(selectedItems);
   var count = keys.length;
   var bar   = document.getElementById('sel-bar');
@@ -690,12 +841,13 @@ function updateBar() {{
   cnt.textContent = count;
   lbl.textContent = count === 1 ? 'item selected' : 'items selected';
   bar.classList.toggle('visible', count > 0);
-  // Show "View Together" only when multiple log files are selected (not zips)
+  // "View Together" only makes sense for 2+ log files (not zip archives)
   var logCount = Object.keys(selectedItems).filter(function(k){{return selectedItems[k].type !== 'zip';}}).length;
   if (viewBtn) viewBtn.style.display = logCount >= 2 ? 'inline-flex' : 'none';
 }}
 
 function viewSelected() {{
+  // Open multi-pod merged view in a new tab via a dynamically created POST form
   var keys = Object.keys(selectedItems).filter(function(k){{return selectedItems[k].type !== 'zip';}});
   if (keys.length < 2) return;
   var form = document.createElement('form');
@@ -716,12 +868,15 @@ function viewSelected() {{
 }}
 
 function downloadSelected() {{
+  // Download all selected items: zips via direct links, logs via multi-download endpoint
   var keys = Object.keys(selectedItems);
   if (!keys.length) return;
 
+  // Separate zip archives from log files — they use different download mechanisms
   var logs = keys.filter(function(k) {{ return selectedItems[k].type !== 'zip'; }});
   var zips = keys.filter(function(k) {{ return selectedItems[k].type === 'zip'; }});
 
+  // Each zip is downloaded individually via a direct link
   zips.forEach(function(k) {{
     var a = document.createElement('a');
     a.href = '/download/zip/' + encodeURIComponent(selectedItems[k].file);
@@ -729,6 +884,7 @@ function downloadSelected() {{
     document.body.appendChild(a); a.click(); document.body.removeChild(a);
   }});
 
+  // Single log file: direct download; multiple: POST to /download/multi for a merged zip
   if (logs.length === 1) {{
     var item = selectedItems[logs[0]];
     var a = document.createElement('a');
@@ -757,7 +913,7 @@ document.addEventListener('DOMContentLoaded', function() {{
   loadSelection();
   restoreCheckboxes();
 
-  /* Ctrl+K keyboard shortcut to focus search */
+  /* Ctrl+K keyboard shortcut to focus the log search input */
   document.addEventListener('keydown', function(e) {{
     if ((e.ctrlKey || e.metaKey) && e.key === 'k') {{
       e.preventDefault();
@@ -770,8 +926,26 @@ document.addEventListener('DOMContentLoaded', function() {{
 <div id="toast"></div>
 </body></html>"""
 
-# ------------------------------------------------------------------ page renderer
+# ═══════════════════════════════════════════════════════════════════════════════
+#  PAGE RENDERER
+# ═══════════════════════════════════════════════════════════════════════════════
+
 def render_page(tab, body, title_suffix=""):
+    """
+    Inject page-specific content into the shared HTML template (PAGE).
+
+    Sets the "active" CSS class on the matching navigation tab and fills
+    the {body} placeholder with route-specific HTML.
+
+    Args:
+        tab:          Active tab identifier ("dashboard", "downloads",
+                      "files", "collect", "search").
+        body:         HTML string for the page content area.
+        title_suffix: Optional string appended to the <title> tag.
+
+    Returns:
+        str: Fully rendered HTML page ready for the response.
+    """
     a = lambda t: "active" if tab == t else ""
     return PAGE.format(
         title_suffix=f" — {title_suffix}" if title_suffix else "",
@@ -781,9 +955,25 @@ def render_page(tab, body, title_suffix=""):
         body=body
     )
 
-# ------------------------------------------------------------------ routes
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE: DASHBOARD
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @app.route("/")
 def dashboard():
+    """
+    Main dashboard page — select a collection run, then a pod, to view logs.
+
+    Query Parameters:
+        run   (str): Selected collection run directory name.
+        pod   (str): Selected log filename within the run.
+        ns    (str): Namespace filter — only show pods from this namespace.
+        level (str): Log level filter — "all", "error", "warning", "info", "debug".
+        q     (str): Text search filter applied to log lines.
+
+    Returns:
+        Rendered HTML with stats bar, filter controls, and log viewer.
+    """
     runs      = get_runs()
     sel_run   = request.args.get("run", "")
     sel_pod   = request.args.get("pod", "")
@@ -803,7 +993,7 @@ def dashboard():
                 raw = target.read_text(errors='replace')
                 lines = raw.splitlines()
 
-                # Quick level counts
+                # Quick level counts — scan first 5000 lines for dashboard badges
                 for line in lines[:5000]:
                     ll = line.lower()
                     if 'error' in ll: error_count += 1
@@ -811,11 +1001,12 @@ def dashboard():
                     elif 'info' in ll: info_count += 1
                     elif 'debug' in ll: debug_count += 1
 
-                # Apply filters
+                # Apply level filter (server-side) to reduce rendered HTML size
                 if level and level != "all":
                     pat = LEVEL_PATTERNS.get(level)
                     if pat:
                         lines = [l for l in lines if pat.search(l)]
+                # Apply text search filter (case-insensitive substring match)
                 if search:
                     sl = search.lower()
                     lines = [l for l in lines if sl in l.lower()]
@@ -824,7 +1015,7 @@ def dashboard():
             else:
                 abort(404)
 
-    # stats bar
+    # Stats bar — five cards across the top of the dashboard
     stats_html = f"""
     <div class="stats-grid">
       <div class="stat-card"><div class="val">{stats['runs']}</div><div class="lbl">Collection Runs</div></div>
@@ -834,13 +1025,14 @@ def dashboard():
       <div class="stat-card"><div class="val" style="font-size:1rem">{stats['last_run']}</div><div class="lbl">Last Run</div></div>
     </div>"""
 
-    # run selector — always show all runs (SQLite makes this instant)
+    # Run selector — always show all runs (SQLite makes this instant)
     run_opts = "".join(
         f'<option value="{r}" {"selected" if r==sel_run else ""}>{r}</option>'
         for r in runs
     )
 
-    # pod selector — filter by namespace if selected
+    # Namespace filtering: extract unique namespaces from filenames in this run.
+    # Log filenames follow the convention: namespace__pod__container.log
     sel_ns = request.args.get("ns", "")
     
     # Get unique namespaces from this run's files
@@ -848,7 +1040,7 @@ def dashboard():
         f.name.split("__")[0] for f in log_files if "__" in f.name
     )) if log_files else []
     
-    # Filter pods by namespace
+    # Filter pods by namespace if a namespace is selected
     filtered_log_files = log_files
     if sel_ns and log_files:
         filtered_log_files = [f for f in log_files if f.name.startswith(sel_ns + "__")]
@@ -914,7 +1106,7 @@ def dashboard():
       </div>
     </div>"""
 
-    # log viewer
+    # Log viewer — shown when a specific pod is selected
     if log_content is not None:
         lines = log_content.splitlines()
         line_count = len(lines)
@@ -948,6 +1140,8 @@ def dashboard():
           </div>
           <pre id="logview">{log_html}</pre>
           <script>
+          // Client-side log colorizing: wraps each line in a <span> with a
+          // CSS class based on detected log level keywords for syntax highlighting.
           (function(){{
             var pre=document.getElementById('logview');
             var lines=pre.innerHTML.split('\\n');
@@ -978,9 +1172,21 @@ def dashboard():
     body = stats_html + controls + viewer
     return render_page("dashboard", body, "Dashboard")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE: DOWNLOADS
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/downloads")
 def downloads():
+    """
+    Downloads page — lists all .tar.gz compressed archives with date/size.
+
+    Users can select multiple archives for batch download via the
+    floating selection bar.
+
+    Returns:
+        Rendered HTML with a table of available archives or an empty state.
+    """
     zips = list(get_zips())
 
     if zips:
@@ -990,6 +1196,7 @@ def downloads():
             name = z.name
             fn   = _html.escape(name)
             try:
+                # Parse timestamp from archive filename: lognest_YYYY-MM-DD_HH-MM-SS.tar.gz
                 ts   = name.replace("lognest_","").replace(".tar.gz","")
                 dt   = datetime.strptime(ts, "%Y-%m-%d_%H-%M-%S")
                 date = dt.strftime("%b %d, %Y  %H:%M")
@@ -1060,9 +1267,26 @@ def downloads():
     </div>"""
     return render_page("downloads", body, "Downloads")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE: FILES
+# ═══════════════════════════════════════════════════════════════════════════════
 
 @app.route("/files")
 def files():
+    """
+    File browser page — browse individual log files within a selected run.
+
+    Supports namespace filtering and filename search. Each file row shows
+    namespace, pod, container, and size with download/view actions.
+
+    Query Parameters:
+        run (str): Collection run to browse.
+        ns  (str): Namespace filter.
+        q   (str): Filename substring search.
+
+    Returns:
+        Rendered HTML with filter controls and a file table.
+    """
     runs    = get_runs()
     sel_run = request.args.get("run", "")
     search  = request.args.get("q", "")
@@ -1073,7 +1297,7 @@ def files():
         for r in runs
     )
 
-    # Get namespaces for this run
+    # Get namespaces for this run (derived from filename convention)
     ns_in_run = []
     if sel_run:
         raw_files = get_log_files(sel_run)
@@ -1123,6 +1347,7 @@ def files():
     table_block = ""
     if sel_run:
         class FileInfo:
+            """Lightweight wrapper to parse namespace/pod/container from filename."""
             def __init__(self, path):
                 self.name = path.name
                 self.size = _human_size(path.stat().st_size)
@@ -1132,8 +1357,10 @@ def files():
                 self.container = parts[2] if len(parts) > 2 else "—"
 
         all_files = [FileInfo(f) for f in get_log_files(sel_run)]
+        # Apply namespace filter
         if sel_ns:
             all_files = [f for f in all_files if f.ns == sel_ns]
+        # Apply filename search filter
         if search:
             all_files = [f for f in all_files if search.lower() in f.name.lower()]
 
@@ -1226,25 +1453,43 @@ def files():
     return render_page("files", controls + table_block, "Files")
 
 
-# ------------------------------------------------------------------ multi-download
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE: DOWNLOADS (multi-file serving)
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @app.route("/download/multi", methods=["POST"])
 def download_multi():
+    """
+    Bundle multiple selected log files into a single ZIP and stream it back.
+
+    Expects parallel form arrays: run[] and file[]. Builds an in-memory ZIP
+    with directory structure run/filename. Sanitizes paths to prevent
+    directory traversal.
+
+    Form Data:
+        run[]  (list[str]): Run names for each selected file.
+        file[] (list[str]): Filenames within each corresponding run.
+
+    Returns:
+        application/zip response with Content-Disposition attachment.
+        400 if arrays are missing or mismatched.
+    """
     runs  = request.form.getlist("run[]")
     files = request.form.getlist("file[]")
 
     if not runs or not files or len(runs) != len(files):
         abort(400)
 
-    # Build zip in memory
+    # Build zip in memory — avoids temp files on the shared PVC
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for run, filename in zip(runs, files):
-            # Sanitize — no path traversal
+            # Sanitize — strip path components to prevent traversal attacks
             run      = Path(run).name
             filename = Path(filename).name
             path     = LOGS_DIR / run / filename
             if path.exists() and path.is_file():
-                # Store as run/filename inside the zip
+                # Store as run/filename inside the zip for clear organization
                 zf.write(path, arcname=f"{run}/{filename}")
 
     buf.seek(0)
@@ -1258,20 +1503,47 @@ def download_multi():
         }
     )
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE: API & HEALTH
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# ------------------------------------------------------------------ API
 @app.route("/healthz")
 def healthz():
+    """
+    Kubernetes liveness/readiness probe endpoint.
+
+    Returns:
+        Plain text "ok" with 200 status.
+    """
     return "ok"
 
 @app.route("/api/stats")
 def api_stats():
+    """
+    JSON API endpoint returning aggregate statistics.
+
+    Useful for external monitoring or dashboard widgets.
+
+    Returns:
+        JSON object: {runs, files, zips, storage, last_run}
+    """
     return jsonify(get_stats())
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE: DOWNLOADS (file serving)
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# ------------------------------------------------------------------ downloads
 @app.route("/download/zip/<filename>")
 def download_zip(filename):
+    """
+    Serve a compressed archive file for download.
+
+    Args:
+        filename: Name of the .tar.gz file in ZIP_DIR.
+
+    Returns:
+        File download response, or 404 if not found.
+    """
     path = ZIP_DIR / filename
     if not path.exists() or not path.is_file():
         abort(404)
@@ -1280,20 +1552,47 @@ def download_zip(filename):
 
 @app.route("/download/log/<run>/<filename>")
 def download_log(run, filename):
+    """
+    Serve a single log file for download.
+
+    Args:
+        run:      Collection run directory name.
+        filename: Log filename within the run.
+
+    Returns:
+        File download response, or 404 if not found.
+    """
     path = LOGS_DIR / run / filename
     if not path.exists() or not path.is_file():
         abort(404)
     return send_file(str(path), as_attachment=True, download_name=filename)
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE: SEARCH
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# ------------------------------------------------------------------ search across runs
 @app.route("/search")
 def search_page():
+    """
+    Cross-run search page — find log files by pod name, namespace, or date range.
+
+    When the SQLite index is available, queries are instant across all runs.
+    Falls back to NFS scanning (limited to 30 most recent runs) otherwise.
+
+    Query Parameters:
+        pod  (str): Pod/container/filename substring to search for.
+        ns   (str): Exact namespace filter.
+        from (str): Start date filter (inclusive, format YYYY-MM-DD).
+        to   (str): End date filter (inclusive, format YYYY-MM-DD).
+
+    Returns:
+        Rendered HTML with search form and sortable results table.
+    """
     pod_query = request.args.get("pod", "").strip()
     date_from = request.args.get("from", "").strip()
     date_to   = request.args.get("to", "").strip()
 
-    # Get unique namespaces for dropdown
+    # Get unique namespaces for the namespace dropdown filter
     ns_list = []
     if _use_index:
         try:
@@ -1326,18 +1625,22 @@ def search_page():
                 """
                 params = []
 
+                # Pod/namespace/filename fuzzy search (LIKE %query%)
                 if pod_query:
                     query += " AND (f.pod LIKE ? OR f.namespace LIKE ? OR f.filename LIKE ?)"
                     params.extend([f"%{pod_query}%", f"%{pod_query}%", f"%{pod_query}%"])
 
+                # Exact namespace match
                 if sel_ns:
                     query += " AND f.namespace = ?"
                     params.append(sel_ns)
 
+                # Date range filtering — run names are timestamp-formatted (YYYY-MM-DD_HH-MM-SS)
                 if date_from:
                     query += " AND r.name >= ?"
                     params.append(date_from)
                 if date_to:
+                    # Append a high time suffix so the "to" date is inclusive of all runs that day
                     query += " AND r.name <= ?"
                     params.append(date_to + "_99-99-99")
 
@@ -1348,7 +1651,7 @@ def search_page():
             except Exception as e:
                 results = []
         else:
-            # Fallback: scan NFS (slow)
+            # Fallback: scan NFS (slow) — limited to 30 runs to avoid timeout
             runs = get_runs()
             if date_from:
                 runs = [r for r in runs if r >= date_from]
@@ -1372,7 +1675,7 @@ def search_page():
                                 "info_count": 0, "debug_count": 0,
                             })
 
-    # Build namespace options
+    # Build namespace options for the dropdown
     ns_opts = "".join(
         f'<option value="{_html.escape(n)}" {"selected" if n==sel_ns else ""}>{_html.escape(n)}</option>'
         for n in ns_list
@@ -1502,6 +1805,8 @@ def search_page():
           </div>
         </div>
         <script>
+        // Client-side column sorting — toggles direction on each click.
+        // Attempts numeric sort for size/level columns, falls back to locale string compare.
         var sortDir={{}};
         function sortTable(col){{
           var table=document.querySelector('.table-wrap table');
@@ -1534,24 +1839,43 @@ def search_page():
 
     return render_page("search", controls + table, "Search")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE: VIEW MULTI
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# ------------------------------------------------------------------ view-multi
 @app.route("/view-multi", methods=["POST"])
 def view_multi():
+    """
+    Multi-pod merged log viewer — interleaves lines from multiple pods sorted
+    by timestamp, color-coded per source.
+
+    Receives parallel form arrays (run[], file[]) identifying which log files
+    to merge. Each source gets a distinct color from a 10-color palette.
+    Lines are sorted by the ISO timestamp prefix (first space-separated token).
+    Each file is limited to the last 1000 lines for browser performance.
+
+    Form Data:
+        run[]  (list[str]): Run names.
+        file[] (list[str]): Filenames within each run.
+
+    Returns:
+        Rendered HTML with a merged, color-coded log viewer and live search.
+        400 if arrays are missing or mismatched.
+    """
     runs  = request.form.getlist("run[]")
     files = request.form.getlist("file[]")
 
     if not runs or len(runs) != len(files):
         abort(400)
 
-    # Color palette for different pods
+    # Color palette for different pods — cycles if more than 10 sources
     POD_COLORS = [
         "#4f8ef7", "#34d399", "#fbbf24", "#f87171",
         "#a78bfa", "#fb923c", "#38bdf8", "#f472b6",
         "#86efac", "#fde68a",
     ]
 
-    # Read and tag each line with its source
+    # Read and tag each line with its source index for color-coding
     all_lines = []
     sources = []
     for i, (run, filename) in enumerate(zip(runs, files)):
@@ -1568,7 +1892,7 @@ def view_multi():
         try:
             content = path.read_text(errors="replace")
             lines = content.splitlines()
-            # Limit to last 1000 lines per file for speed
+            # Limit to last 1000 lines per file to keep browser responsive
             if len(lines) > 1000:
                 lines = lines[-1000:]
             for line in lines:
@@ -1576,10 +1900,10 @@ def view_multi():
         except Exception:
             continue
 
-    # Sort by timestamp prefix (ISO format at start of line)
+    # Sort all merged lines by timestamp prefix (ISO format at start of line)
     def extract_ts(line_tuple):
+        """Extract the first space-delimited token as a sortable timestamp key."""
         line = line_tuple[0]
-        # Try to extract timestamp from start of line
         parts = line.split(" ", 1)
         if parts and len(parts[0]) >= 10:
             return parts[0]
@@ -1587,7 +1911,7 @@ def view_multi():
 
     all_lines.sort(key=extract_ts)
 
-    # Build legend
+    # Build color legend showing which color maps to which pod
     legend_html = "".join(
         f'<span style="display:inline-flex;align-items:center;gap:5px;margin-right:12px;font-size:.78rem">'
         f'<span style="width:10px;height:10px;border-radius:50%;background:{s["color"]};flex-shrink:0"></span>'
@@ -1595,7 +1919,7 @@ def view_multi():
         for s in sources
     )
 
-    # Build merged log HTML
+    # Build merged log HTML — each line gets a colored left border and source label
     log_lines_html = ""
     for line, src_idx, label, color in all_lines:
         esc = _html.escape(line)
@@ -1640,6 +1964,7 @@ def view_multi():
            font-family:'JetBrains Mono','Fira Code',monospace;margin:0">{log_lines_html}</pre>
     </div>
     <script>
+    // Live client-side filter for the multi-pod merged view
     function filterMulti(q) {{
       var lines = document.querySelectorAll('#mp-log .log-line');
       var count = 0;
@@ -1655,8 +1980,11 @@ def view_multi():
 
     return render_page("search", body, "Multi-Pod View")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ROUTE: ON-DEMAND
+# ═══════════════════════════════════════════════════════════════════════════════
 
-# ------------------------------------------------------------------ on-demand collect
+# Kubernetes and on-demand collection configuration (from environment)
 K8S_NAMESPACE   = os.environ.get("POD_NAMESPACE", "lognest")
 ONDEMAND_LOG    = Path(os.environ.get("LOGS_DIR", "/data/logs")) / ".ondemand_runs.json"
 COLLECTOR_IMAGE = os.environ.get("COLLECTOR_IMAGE", "alpine/k8s:1.30.2")
@@ -1665,6 +1993,12 @@ COLLECTOR_CM    = os.environ.get("COLLECTOR_CM", "lognest-collector-script")
 PVC_NAME        = os.environ.get("PVC_NAME", "pvc-lognest")
 
 def load_ondemand_runs():
+    """
+    Load the history of on-demand collection runs from a JSON file on the PVC.
+
+    Returns:
+        list[dict]: Previous on-demand run entries, newest first.
+    """
     try:
         if ONDEMAND_LOG.exists():
             return _json.loads(ONDEMAND_LOG.read_text())
@@ -1673,9 +2007,17 @@ def load_ondemand_runs():
     return []
 
 def save_ondemand_run(entry):
+    """
+    Persist a new on-demand run entry to the JSON history file.
+
+    Keeps only the last 50 entries to prevent unbounded growth.
+
+    Args:
+        entry (dict): Keys — triggered, status, job, note.
+    """
     runs = load_ondemand_runs()
     runs.insert(0, entry)
-    runs = runs[:50]  # keep last 50
+    runs = runs[:50]  # keep last 50 entries
     try:
         ONDEMAND_LOG.write_text(_json.dumps(runs))
     except Exception:
@@ -1683,6 +2025,16 @@ def save_ondemand_run(entry):
 
 @app.route("/collect")
 def collect_page():
+    """
+    On-demand collection page — shows trigger form and history of past runs.
+
+    Displays a description of what on-demand collection does, a form to
+    trigger a new run with an optional note, and a table of recent runs
+    with their status (triggered/running/completed/failed).
+
+    Returns:
+        Rendered HTML with trigger form and history table.
+    """
     runs = load_ondemand_runs()
 
     if runs:
@@ -1790,6 +2142,19 @@ def collect_page():
 
 @app.route("/collect/trigger", methods=["POST"])
 def collect_trigger():
+    """
+    Trigger an on-demand log collection by creating a Kubernetes Job.
+
+    Reads the pod template from the existing CronJob (lognest-collector-1)
+    and creates a one-shot Job with the same spec. This ensures the on-demand
+    run uses the same image, volumes, and service account as scheduled runs.
+
+    Form Data:
+        note (str): Optional user-provided note (max 200 chars).
+
+    Returns:
+        302 redirect to /collect page.
+    """
     note     = request.form.get("note", "").strip()[:200]
     ts       = datetime.now().strftime("%Y-%m-%d-%H-%M-%S")
     job_name = f"lognest-ondemand-{ts}"
@@ -1797,10 +2162,12 @@ def collect_trigger():
     try:
         from kubernetes import client as k8s_client, config as k8s_config
 
+        # Use in-cluster config (pod's service account token)
         k8s_config.load_incluster_config()
         batch_v1 = k8s_client.BatchV1Api()
 
-        # Get the source CronJob to copy its pod template
+        # Get the source CronJob to copy its pod template — ensures consistency
+        # with scheduled collection runs (same image, volumes, env vars)
         cron = batch_v1.read_namespaced_cron_job(
             name="lognest-collector-1",
             namespace=K8S_NAMESPACE
@@ -1841,6 +2208,9 @@ def collect_trigger():
     from flask import redirect
     return redirect("/collect")
 
+# ═══════════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ═══════════════════════════════════════════════════════════════════════════════
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=8080, debug=False)
