@@ -724,7 +724,7 @@ tr.selected td:first-child{{border-left:2px solid var(--accent)}}
 
 <script>
 // ─── Selection state ───────────────────────────────────────────────────────
-// selectedItems is a dict keyed by "run|file" storing {run, file, type}.
+// selectedItems is a dict keyed by "run|file" storing run, file, type info.
 // It persists across page navigations via sessionStorage so users can
 // select files from different pages and batch-download them.
 var selectedItems = {{}};
