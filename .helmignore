@@ -1,0 +1,29 @@
+# Patterns to ignore when building Helm packages
+.git
+.gitignore
+.vscode
+*.swp
+*.bak
+*.tmp
+*~
+
+# Documentation (not needed in chart)
+docs/
+*.docx
+*.pdf
+
+# Tests (not needed in chart)
+tests/
+
+# Preview files
+preview/
+
+# Docker build files (not needed in chart)
+docker/
+
+# Scripts (helper scripts, not templates)
+scripts/
+
+# Temp files
+push.ps1
+~$*
